@@ -1,0 +1,109 @@
+# Environment variables
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyo
+*.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.pytest_cache/
+.cache
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Docker
+docker-compose.override.yml
+docker-compose.*.yml
+
+# FAISS index (generated at runtime)
+faiss_index.bin
+faiss_metadata.json
+
+# Build artifacts
+.build/
+.target/
+
+# Misc
+.ipynb_checkpoints/
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Local database
+*.sqlite3
+
+# Coverage
+coverage.xml
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# Optional lock files (uncomment to ignore if desired)
+# package-lock.json
+# yarn.lock

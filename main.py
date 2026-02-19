@@ -1,0 +1,550 @@
+"""FastAPI application — policy-driven intent-gated selective retrieval.
+
+Architecture layers:
+  1. Policy Engine  (policy.py)  — deterministic behavior rules
+  2. LLM Package    (llm/)       — client, classifier, orchestrator, generators
+  3. Pipeline       (this file)  — orchestrates retrieval + generation
+  4. Database       (query_db.py)— persistence + vector search
+  5. Vector Store   (vector_store.py) — FAISS in-memory index
+
+Pipeline (shared by /chat and /chat/stream):
+  1. Embed query
+  2. Load state     (history + profile entries)
+  3. Classify intent
+  4. Topic gate     (prevents false continuation across domain jumps)
+  5. Extract features + policy resolve
+  6. History pruning
+  7. Selective retrieval  (driven by policy decision)
+  8. Generate response
+  9. Persist         (DB writes in background thread)
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, List, Optional
+
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+import query_db
+from embeddings import get_embedding
+from llm.classifier import classify_intent
+from llm.generators import generate_response, generate_response_stream, generate_title
+from llm.profile_detector import detect_profile_updates
+from policy import BehaviorPolicy, extract_context_features
+from vector_store import add_documents, search
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+#  App
+# ---------------------------------------------------------------------------
+app = FastAPI(title="RAG Chat", version="3.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DB_ENABLED = False
+
+# ---------------------------------------------------------------------------
+#  Request / response models
+# ---------------------------------------------------------------------------
+
+class ChatRequest(BaseModel):
+    user_query: str
+    conversation_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class RenameRequest(BaseModel):
+    title: str
+
+
+class NewConversationRequest(BaseModel):
+    title: str = "New Chat"
+
+
+class ProfileEntryRequest(BaseModel):
+    key: str
+    value: str
+    category: str = "general"
+
+
+# ---------------------------------------------------------------------------
+#  Startup — load documents, init DB
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+def startup():
+    global DB_ENABLED
+    DB_ENABLED = query_db.init_db()
+    if DB_ENABLED:
+        logger.info("PostgreSQL connected — full persistence active")
+    else:
+        logger.warning("PostgreSQL not available — in-memory only")
+
+    with open("data.txt", "r", encoding="utf-8") as f:
+        text = f.read()
+    chunks = [text[i : i + 500] for i in range(0, len(text), 450)]
+    add_documents(chunks)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SHARED PIPELINE — single source of truth for both endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Thresholds & constants
+TOPIC_CONTINUATION_THRESHOLD = 0.35
+RECENCY_WINDOW = 6
+SEM_K = 3
+SIM_THRESHOLD = 0.65
+
+
+@dataclass
+class PipelineResult:
+    """Output of the shared pipeline — everything needed for generation."""
+    query: str
+    cid: str
+    query_embedding: Any
+    intent: str
+    confidence: float
+    rag_context: str = ""
+    profile_context: str = ""
+    similar_qa_context: str = ""
+    curated_history: Optional[list] = None
+    recent_messages: list = field(default_factory=list)
+    retrieval_info: dict = field(default_factory=dict)
+    query_tags: list = field(default_factory=list)
+    privacy_mode: bool = False
+    greeting_name: Optional[str] = None
+
+
+def _profile_entries_to_text(entries: list[dict]) -> str:
+    """Convert structured profile entries to human-readable text."""
+    if not entries:
+        return ""
+    return "\n".join(f"{e['key']}: {e['value']}" for e in entries)
+
+
+def run_pipeline(request: ChatRequest) -> PipelineResult:
+    """Execute the policy-driven intent-gated retrieval pipeline.
+
+    Returns a PipelineResult with all context assembled — ready for
+    either generate_response() or generate_response_stream().
+    """
+    cid = request.conversation_id or str(uuid.uuid4())
+    query = request.user_query
+    query_tags = request.tags or query_db.infer_tags(query)
+
+    # Step 1: Embed
+    query_embedding = get_embedding(query)
+
+    # Step 2: Load state (history + profile)
+    recent_messages: list = []
+    profile_entries: list = []
+    if DB_ENABLED:
+        recent_messages = query_db.get_recent_chat_messages(cid, limit=20)
+        profile_entries = query_db.get_user_profile()
+
+    # Step 3: Classify intent
+    intent_result = classify_intent(query, recent_messages)
+    intent = intent_result["intent"]
+    confidence = intent_result["confidence"]
+    logger.info(f"Intent: {intent} ({confidence:.2f})")
+
+    # Step 4: Topic similarity gate (only for continuation)
+    topic_similarity = None
+    if DB_ENABLED and intent == "continuation":
+        topic_vec = query_db.get_topic_vector(cid)
+        if topic_vec is not None:
+            q_arr = np.asarray(query_embedding, dtype=np.float32)
+            dot = float(np.dot(q_arr, topic_vec))
+            norm = float(np.linalg.norm(q_arr) * np.linalg.norm(topic_vec))
+            topic_similarity = dot / norm if norm > 0 else 0.0
+            if topic_similarity < TOPIC_CONTINUATION_THRESHOLD:
+                logger.info(f"Topic gate: {topic_similarity:.3f} < threshold → general")
+                intent, confidence = "general", 0.7
+
+    # Step 5: Context features + policy resolve
+    features = extract_context_features(
+        query=query,
+        intent=intent,
+        profile_entries=profile_entries,
+        conversation_length=len(recent_messages),
+        topic_similarity=topic_similarity,
+    )
+    decision = BehaviorPolicy().resolve(features, intent)
+    logger.info(
+        f"Policy: route={decision.retrieval_route}, profile={decision.inject_profile}, "
+        f"rag={decision.inject_rag}, qa={decision.inject_qa_history}, "
+        f"greeting={decision.greeting_name or 'no'}"
+    )
+
+    # Step 6: History pruning (conditional on policy)
+    curated_history = None
+    if decision.use_curated_history and recent_messages:
+        recency_slice = recent_messages[-RECENCY_WINDOW:]
+        semantic_extra: list = []
+        if DB_ENABLED and intent == "continuation" and len(recent_messages) > RECENCY_WINDOW:
+            older_qa = query_db.get_similar_messages_in_conversation(
+                query_embedding, cid, k=SEM_K, min_similarity=SIM_THRESHOLD,
+            )
+            for item in older_qa:
+                if item["similarity"] >= SIM_THRESHOLD:
+                    semantic_extra.append({"role": "user", "content": item["query"]})
+                    if item.get("response"):
+                        semantic_extra.append({"role": "assistant", "content": item["response"][:400]})
+        curated_history = semantic_extra + recency_slice
+        logger.info(
+            f"History: {len(recent_messages)} raw → {len(curated_history)} curated "
+            f"(recency={len(recency_slice)}, semantic={len(semantic_extra)})"
+        )
+
+    # Step 7: Selective retrieval (driven by policy decision)
+    rag_context = ""
+    profile_context = ""
+    similar_qa_context = ""
+    retrieval_info: dict = {
+        "intent": intent,
+        "confidence": confidence,
+        "topic_similarity": round(topic_similarity, 3) if topic_similarity is not None else None,
+        "route": decision.retrieval_route,
+    }
+
+    if decision.inject_rag:
+        docs = search(query, k=decision.rag_k)
+        rag_context = "\n".join(docs)
+        retrieval_info["num_docs"] = len(docs)
+        if DB_ENABLED:
+            similar_queries = query_db.retrieve_similar_queries(
+                query_embedding, k=decision.qa_k, conversation_id=cid,
+                current_tags=query_tags, min_similarity=decision.qa_min_similarity,
+            )
+            if similar_queries:
+                lines = [
+                    f"{i}. Q: {item['query']} → A: {(item.get('response') or '')[:200]}"
+                    for i, item in enumerate(similar_queries[:4], 1)
+                ]
+                similar_qa_context = "\n".join(lines)
+                retrieval_info["similar_queries"] = len(similar_queries)
+
+    if decision.inject_qa_history and intent == "continuation" and DB_ENABLED and len(recent_messages) > 2:
+        same_conv_qa = query_db.retrieve_same_conversation_queries(
+            query_embedding, cid, k=3, min_similarity=SIM_THRESHOLD,
+        )
+        if same_conv_qa:
+            lines = [f"- Q: {q['query'][:150]} → A: {(q['response'] or '')[:150]}" for q in same_conv_qa]
+            similar_qa_context = "\n".join(lines)
+            retrieval_info["same_conv_qa"] = len(same_conv_qa)
+
+    if decision.inject_profile:
+        profile_context = _profile_entries_to_text(profile_entries)
+        retrieval_info["profile_injected"] = bool(profile_context)
+
+    if decision.privacy_mode and not profile_context and DB_ENABLED:
+        profile_context = _profile_entries_to_text(profile_entries)
+        retrieval_info["profile_injected"] = bool(profile_context)
+
+    if decision.greeting_name:
+        retrieval_info["greeting_personalized"] = True
+
+    return PipelineResult(
+        query=query,
+        cid=cid,
+        query_embedding=query_embedding,
+        intent=intent,
+        confidence=confidence,
+        rag_context=rag_context,
+        profile_context=profile_context,
+        similar_qa_context=similar_qa_context,
+        curated_history=curated_history,
+        recent_messages=recent_messages,
+        retrieval_info=retrieval_info,
+        query_tags=query_tags,
+        privacy_mode=decision.privacy_mode,
+        greeting_name=decision.greeting_name,
+    )
+
+
+def persist_after_response(p: PipelineResult, response_text: str):
+    """Write messages / profile updates to DB in a background thread."""
+    if not DB_ENABLED:
+        return
+
+    def _work():
+        try:
+            existing = query_db.get_conversation_messages(p.cid, limit=1)
+            is_first = len(existing) == 0
+
+            query_db.store_query(
+                query_text=p.query,
+                embedding=p.query_embedding,
+                response_text=response_text,
+                conversation_id=p.cid,
+                tags=p.query_tags,
+                metadata={"intent": p.intent, "tags": p.query_tags},
+            )
+            query_db.update_topic_vector(p.cid, p.query_embedding, alpha=0.1)
+            query_db.store_chat_message(
+                role="user", content=p.query, conversation_id=p.cid,
+                tags=p.query_tags, metadata={"intent": p.intent},
+            )
+            query_db.store_chat_message(
+                role="assistant", content=response_text, conversation_id=p.cid,
+                metadata={"intent": p.intent},
+            )
+            query_db.increment_message_count(p.cid, 2)
+            query_db.touch_conversation(p.cid)
+
+            if is_first:
+                try:
+                    title = generate_title(p.query)
+                    query_db.rename_conversation(p.cid, title)
+                    logger.info(f"Auto-titled: {title}")
+                except Exception as e:
+                    logger.error(f"Title gen failed: {e}")
+
+            updates = detect_profile_updates(p.query, response_text)
+            for entry in updates:
+                query_db.update_profile_entry(
+                    entry["key"], entry["value"],
+                    category=entry.get("category", "general"),
+                )
+        except Exception as e:
+            logger.error(f"Persist error: {e}")
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONVERSATION CRUD
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/conversations")
+def create_conversation(req: NewConversationRequest):
+    if not DB_ENABLED:
+        stub_id = str(uuid.uuid4())
+        return {"id": stub_id, "title": req.title, "created_at": None, "updated_at": None, "message_count": 0}
+    conv = query_db.create_conversation(title=req.title)
+    if not conv:
+        raise HTTPException(500, "Failed to create conversation")
+    return conv
+
+
+@app.get("/conversations")
+def list_conversations(limit: int = 50):
+    if not DB_ENABLED:
+        return {"conversations": [], "count": 0}
+    convs = query_db.list_conversations(limit=limit)
+    return {"conversations": convs, "count": len(convs)}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    conv = query_db.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    return conv
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_messages(conversation_id: str, limit: int = 200):
+    if not DB_ENABLED:
+        return {"conversation_id": conversation_id, "messages": [], "count": 0}
+    msgs = query_db.get_conversation_messages(conversation_id, limit=limit)
+    return {"conversation_id": conversation_id, "messages": msgs, "count": len(msgs)}
+
+
+@app.put("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: str, req: RenameRequest):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    result = query_db.rename_conversation(conversation_id, req.title)
+    if not result:
+        raise HTTPException(404, "Conversation not found")
+    return result
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    ok = query_db.delete_conversation(conversation_id)
+    if not ok:
+        raise HTTPException(404, "Conversation not found")
+    return {"deleted": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PROFILE ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/profile")
+def get_profile():
+    if not DB_ENABLED:
+        return {"entries": [], "count": 0}
+    entries = query_db.get_user_profile()
+    return {"entries": entries, "count": len(entries)}
+
+
+@app.post("/profile")
+def add_profile_entry(req: ProfileEntryRequest):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    pid = query_db.update_profile_entry(req.key, req.value, category=req.category)
+    if not pid:
+        raise HTTPException(500, "Failed to add profile entry")
+    return {"id": pid, "key": req.key, "value": req.value, "category": req.category}
+
+
+@app.put("/profile/{entry_id}")
+def update_profile(entry_id: int, req: ProfileEntryRequest):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    pid = query_db.update_profile_entry(req.key, req.value, category=req.category)
+    if not pid:
+        raise HTTPException(500, "Failed to update profile entry")
+    return {"id": pid, "key": req.key, "value": req.value, "category": req.category}
+
+
+@app.delete("/profile/{entry_id}")
+def delete_profile_entry(entry_id: int):
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    ok = query_db.delete_profile_entry(entry_id)
+    if not ok:
+        raise HTTPException(500, "Failed to delete profile entry")
+    return {"deleted": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  CHAT ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+    """Non-streaming chat — runs pipeline then returns complete JSON."""
+    p = run_pipeline(request)
+
+    try:
+        response = generate_response(
+            user_query=p.query,
+            chat_history=p.recent_messages,
+            rag_context=p.rag_context,
+            profile_context=p.profile_context,
+            similar_qa_context=p.similar_qa_context,
+            curated_history=p.curated_history,
+            privacy_mode=p.privacy_mode,
+            greeting_name=p.greeting_name,
+        )
+    except Exception as e:
+        logger.error(f"Generation error: {e}")
+        return {"response": f"Error: {e}", "conversation_id": p.cid}
+
+    persist_after_response(p, str(response))
+
+    return {
+        "response": response,
+        "conversation_id": p.cid,
+        "intent": p.intent,
+        "confidence": round(p.confidence, 2),
+        "retrieval_info": p.retrieval_info,
+        "query_tags": p.query_tags,
+    }
+
+
+@app.post("/chat/stream")
+def chat_stream(request: ChatRequest):
+    """Streaming chat — Vercel AI SDK data stream protocol over SSE.
+
+    Lines emitted::
+
+        0:"token"\\n          text delta
+        8:[{meta}]\\n         metadata annotation
+        e:{"finishReason":..}\\n  finish
+        d:{"finishReason":..}\\n  done
+    """
+    p = run_pipeline(request)
+    collected: list[str] = []
+
+    def event_stream():
+        # ── Stage events (AI timeline) ────────────────────────────────────
+        yield f'8:{json.dumps([{"stage": "classified", "intent": p.intent, "confidence": round(p.confidence, 2)}])}\n'
+
+        ri = p.retrieval_info
+        if ri.get("num_docs") or ri.get("similar_queries") or ri.get("same_conv_qa") or ri.get("profile_injected"):
+            yield f'8:{json.dumps([{"stage": "retrieved", "retrieval_info": ri}])}\n'
+
+        yield f'8:{json.dumps([{"stage": "generating"}])}\n'
+
+        for chunk in generate_response_stream(
+            user_query=p.query,
+            chat_history=p.recent_messages,
+            rag_context=p.rag_context,
+            profile_context=p.profile_context,
+            similar_qa_context=p.similar_qa_context,
+            curated_history=p.curated_history,
+            privacy_mode=p.privacy_mode,
+            greeting_name=p.greeting_name,
+        ):
+            if chunk.startswith("0:"):
+                try:
+                    collected.append(json.loads(chunk[2:].rstrip("\n")))
+                except Exception:
+                    pass
+            yield chunk
+
+        # Emit metadata annotation
+        meta = {
+            "intent": p.intent,
+            "confidence": round(p.confidence, 2),
+            "retrieval_info": p.retrieval_info,
+            "query_tags": p.query_tags,
+        }
+        yield f"8:{json.dumps([meta])}\n"
+
+        # Persist in background
+        persist_after_response(p, "".join(collected))
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SERVE UI
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Serve React build assets if available
+_dist = Path(__file__).parent / "frontend" / "dist"
+if _dist.exists() and (_dist / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="frontend-assets")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui():
+    """Prefer React build; fall back to vanilla index.html."""
+    react_index = _dist / "index.html"
+    if react_index.exists():
+        return react_index.read_text(encoding="utf-8")
+    with open("index.html", "r", encoding="utf-8") as f:
+        return f.read()

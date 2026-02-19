@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2e2e2e; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #444; }
+
+/* ── Code blocks (highlight.js) ─────────────────────────────────────────── */
+pre {
+  @apply rounded-lg overflow-x-auto text-sm;
+  background: #0d0d0d !important;
+}
+pre code { @apply block p-4; }
+code:not(pre code) {
+  @apply bg-sidebar-bg text-accent px-1.5 py-0.5 rounded text-sm;
+}
+
+/* ── Markdown prose ─────────────────────────────────────────────────────── */
+.prose { @apply text-gray-200 leading-relaxed; }
+.prose h1 { @apply text-xl font-semibold mt-4 mb-2; }
+.prose h2 { @apply text-lg font-semibold mt-3 mb-1.5; }
+.prose h3 { @apply text-base font-semibold mt-2 mb-1; }
+.prose p { @apply mb-2; }
+.prose ul { @apply list-disc ml-5 mb-2; }
+.prose ol { @apply list-decimal ml-5 mb-2; }
+.prose li { @apply mb-0.5; }
+.prose a { @apply text-accent underline; }
+.prose blockquote {
+  @apply border-l-4 border-sidebar-border pl-4 italic text-gray-400 my-2;
+}
+.prose table { @apply w-full border-collapse my-2; }
+.prose th { @apply border border-sidebar-border bg-sidebar-bg px-3 py-1.5 text-left font-semibold; }
+.prose td { @apply border border-sidebar-border px-3 py-1.5; }
+.prose strong { @apply text-white; }
+
+/* ── Transitions ────────────────────────────────────────────────────────── */
+.fade-in { animation: fadeIn 0.2s ease-in; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Skeleton loader ────────────────────────────────────────────────────── */
+.skeleton {
+  @apply bg-sidebar-hover rounded;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+/* ── AI Status Bar chip hover ───────────────────────────────────────────── */
+.ai-chip { transition: all 0.15s ease; }
+.ai-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+
+/* ── Streaming phase bounce ─────────────────────────────────────────────── */
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+/* ── Command palette backdrop ───────────────────────────────────────────── */
+.palette-backdrop {
+  backdrop-filter: blur(8px);
+  animation: fadeIn 0.15s ease;
+}
+
+/* ── Debug panel monospace ──────────────────────────────────────────────── */
+.debug-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* ── Slide-in for panels ────────────────────────────────────────────────── */
+.slide-in {
+  animation: slideIn 0.2s ease-out;
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

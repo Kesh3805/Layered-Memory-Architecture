@@ -1,0 +1,38 @@
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: chatapp
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d chatapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL so the app reaches the compose postgres service,
+      # not localhost (which is what .env has for local dev)
+      DATABASE_URL: postgresql://root:password@postgres:5432/chatapp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # Cache the sentence-transformers model across rebuilds
+      - model_cache:/root/.cache/huggingface
+
+volumes:
+  postgres_data:
+  model_cache:
