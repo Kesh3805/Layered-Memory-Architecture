@@ -130,9 +130,16 @@ concern.
 8. Do NOT deny having data when profile data has been provided to you."""
 
 GREETING_PERSONALIZATION_FRAME = """\
-The user is greeting you.  Their name on file is "{name}".
-Greet them warmly by name.  Keep it natural and brief — don't list their \
-profile data unprompted."""
+The user's name is "{name}".
+
+Guidelines for using this:
+• If the user is greeting you (hi, hello, hey, good morning, etc.), always
+  open your reply by addressing them warmly by name — e.g. "Hey {name}!"
+  or "Hello, {name}! How can I help you today?"
+• In any other context, use their name occasionally when it feels natural
+  (starting a response, asking a clarifying question, etc.).
+• Do NOT overuse their name — once per response is usually enough.
+• Never say you don't know the user's name when this frame is present."""
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  PROFILE DETECTION

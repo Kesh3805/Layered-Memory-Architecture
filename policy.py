@@ -159,54 +159,55 @@ class BehaviorPolicy:
     def resolve(self, features: ContextFeatures, intent: str) -> PolicyDecision:
         d = PolicyDecision()
 
-        # ── Privacy always takes highest priority ─────────────────────────
+        # ── Base intent rules ─────────────────────────────────────────────
+        # Using if/elif/else (not early returns) so cross-intent overlays
+        # below ALWAYS run regardless of which branch was taken.
+
         if intent == "privacy":
             d.privacy_mode = True
             d.inject_profile = features.has_profile_data
             d.use_curated_history = False
             d.retrieval_route = "privacy"
-            return d
 
-        # ── Profile intent ────────────────────────────────────────────────
-        if intent == "profile":
+        elif intent == "profile":
             if features.is_profile_statement:
                 d.retrieval_route = "profile_update"
                 d.use_curated_history = False
             else:
                 d.inject_profile = features.has_profile_data
                 d.retrieval_route = "profile"
-            return d
 
-        # ── Knowledge base ────────────────────────────────────────────────
-        if intent == "knowledge_base":
+        elif intent == "knowledge_base":
             d.inject_rag = True
             d.inject_qa_history = True
             d.retrieval_route = "rag"
-            return d
 
-        # ── Continuation ──────────────────────────────────────────────────
-        if intent == "continuation":
+        elif intent == "continuation":
             d.inject_qa_history = True
             d.retrieval_route = "conversation"
-            return d
 
-        # ── General (default) ─────────────────────────────────────────────
-        d.use_curated_history = False
-        d.retrieval_route = "llm_only"
+        else:  # general
+            d.use_curated_history = False
+            d.retrieval_route = "llm_only"
 
-        # ── Cross-intent overlay policies ─────────────────────────────────
-        # These fire regardless of the base intent computed above.
+        # ── Cross-intent overlays (always apply after base rules) ─────────
 
-        # Greeting + known name → personalise
-        if features.is_greeting and features.profile_name:
+        # 1. Name injection — whenever we know the user's name and are NOT
+        #    already injecting the full profile (which contains the name),
+        #    inject a lightweight name-context frame so the LLM can use it
+        #    in greetings, continuations, and knowledge responses alike.
+        if features.profile_name and not d.inject_profile:
             d.greeting_name = features.profile_name
 
-        # Personal reference in non-profile intents → inject profile
+        # 2. Personal-reference → inject full profile for any intent
         if (
             features.references_profile
             and features.has_profile_data
-            and intent not in ("profile", "privacy")
+            and not d.inject_profile
+            and intent != "privacy"   # privacy already injects
         ):
             d.inject_profile = True
+            # name is now in the full profile; remove the lightweight frame
+            d.greeting_name = None
 
         return d

@@ -539,7 +539,62 @@ docker compose up --build
 
 ---
 
-## Tech Stack Summary
+## Improvements Roadmap
+
+### Performance
+
+| Item | Impact | Effort |
+|---|---|---|
+| **Streaming latency** *(done)*: parallelize embed + DB loads with `ThreadPoolExecutor`; greetings and profile-statement pre-heuristics bypass the classifier LLM call | High | Low |
+| **Async FastAPI** — convert `run_pipeline()` and the DB layer to `async def` + `asyncpg`. Currently every request blocks a thread from uvicorn's threadpool (FastAPI wraps sync routes automatically, but `asyncpg` would drastically cut DB wait time) | High | Medium |
+| **Classifier caching** — LRU cache the top-N most common classification queries (greetings, "what is RAG", etc.) so repeated questions skip the LLM call entirely | Medium | Low |
+| **FAISS persistence** — save the index to disk at shutdown and reload on startup. Currently `data.txt` is re-indexed from scratch on every restart (~0.5s startup cost). As the KB grows this will matter | Medium | Low |
+| **Chunking by sentence** — replace the current character-stride chunking with sentence-boundary splits (e.g. `nltk.sent_tokenize`). Preserves semantic units, improves retrieval quality | Medium | Low |
+
+### Retrieval Quality
+
+| Item | Impact | Effort |
+|---|---|---|
+| **Hybrid search** — combine FAISS vector search with BM25 keyword search (sparse + dense), then re-rank with a cross-encoder. BM25 catches exact-term matches that embedding search misses | High | Medium |
+| **Metadata filtering on FAISS** — tag documents by topic/source at indexing time; filter retrieval to the relevant subset. Reduces noise from unrelated chunks | High | Medium |
+| **Multi-file knowledge base** — watch a `knowledge/` directory; index all `.txt` / `.md` / `.pdf` files automatically. Hot-reload on file change without restarting | Medium | Medium |
+| **Re-ranking pass** — after FAISS top-k, run a lightweight cross-encoder (e.g. `ms-marco-MiniLM-L-6-v2`) to re-order by relevance before injecting into the prompt | High | Medium |
+| **Better topic vector** — use an exponential moving average over the last N embeddings instead of a fixed-alpha update; decays older context faster | Low | Low |
+
+### Memory & Profile
+
+| Item | Impact | Effort |
+|---|---|---|
+| **Profile versioning** — store history of profile changes (key, old value, new value, timestamp) so users can see how their data evolved | Low | Low |
+| **Profile confidence scores** — rate each profile entry by how explicitly it was stated ("My name is Alex" → high; "I usually work with Python" → medium) | Medium | Medium |
+| **Conversation summarization** — for long conversations, run a summarization pass on messages older than N turns and store the summary embedding. Feed summaries instead of raw text for the semantic history retrieval | High | Medium |
+| **Cross-session memory** — a "preferences" layer that captures stated preferences (e.g. "always use code examples") and injects them as a separate frame | Medium | Medium |
+
+### UI / UX
+
+| Item | Impact | Effort |
+|---|---|---|
+| **Message regeneration** — add a "Regenerate" button that re-sends the last user message with a higher temperature, storing both versions | Medium | Low |
+| **Inline citation links** — when the response cites knowledge-base content, render `[1]` superscripts linking to the source chunk in the retrieval panel | High | Medium |
+| **Conversation search** — full-text + semantic search across all conversations, surfaced in the Command Palette | High | Medium |
+| **Response streaming cancel + resume** — track cancelled partial responses; offer "continue from here" | Low | High |
+| **Keyboard shortcuts** — `N` new chat, `/` search, `D` debug mode, arrows for conversation navigation | Low | Low |
+| **Export** — export full conversation as Markdown / PDF from the command palette | Low | Low |
+
+### Reliability & Ops
+
+| Item | Impact | Effort |
+|---|---|---|
+| **Rate limiting** — per-IP limits on `/chat/stream` using `slowapi` or a Redis token bucket | High | Low |
+| **Structured logging** — replace `logger.info(f"…")` with `structlog` or JSON logging so logs are parseable in production | Medium | Low |
+| **Health check endpoint** — `GET /health` returning DB status, FAISS index size, model load state | Low | Low |
+| **Alembic migrations** — replace ad-hoc `init_db()` DDL with versioned Alembic migrations; safe to run on an existing production DB | High | Medium |
+| **Unit tests** — pytest suite: classifier pre-heuristics, policy overlay correctness, pipeline result shapes, API contract tests | High | Medium |
+| **E2E tests** — Playwright tests against the React frontend for the streaming chat flow | Medium | High |
+
+---
+
+
 
 | Layer | Technology |
 |---|---|
