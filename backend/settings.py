@@ -108,6 +108,26 @@ class Settings:
     # Persist conversation state to DB (vs in-memory only).
     BEHAVIOR_STATE_PERSIST: bool = _env_bool("BEHAVIOR_STATE_PERSIST", True)
 
+    # ── Topic Threading (Research Engine) ─────────────────────────
+    # Enable multi-thread topic graph per conversation.
+    THREAD_ENABLED: bool = _env_bool("THREAD_ENABLED", True)
+    # Cosine similarity threshold for attaching a message to an existing thread.
+    THREAD_ATTACH_THRESHOLD: float = _env_float("THREAD_ATTACH_THRESHOLD", 0.55)
+    # Number of messages before a thread summary is generated/updated.
+    THREAD_SUMMARY_INTERVAL: int = _env_int("THREAD_SUMMARY_INTERVAL", 8)
+    # Maximum active threads per conversation before merging.
+    THREAD_MAX_ACTIVE: int = _env_int("THREAD_MAX_ACTIVE", 12)
+
+    # ── Research Memory ───────────────────────────────────────────
+    # Auto-extract research insights (decisions, hypotheses, open questions).
+    RESEARCH_INSIGHTS_ENABLED: bool = _env_bool("RESEARCH_INSIGHTS_ENABLED", True)
+    # Minimum confidence score for auto-extracted insights.
+    RESEARCH_INSIGHT_MIN_CONFIDENCE: float = _env_float("RESEARCH_INSIGHT_MIN_CONFIDENCE", 0.6)
+    # Enable concept linking across threads.
+    CONCEPT_LINKING_ENABLED: bool = _env_bool("CONCEPT_LINKING_ENABLED", True)
+    # Top-K concept links to surface per query.
+    CONCEPT_LINK_K: int = _env_int("CONCEPT_LINK_K", 5)
+
     # ── Knowledge Base ────────────────────────────────────────────
     KNOWLEDGE_DIR: str = _env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "knowledge"))
     CHUNK_SIZE: int = _env_int("CHUNK_SIZE", 500)

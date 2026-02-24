@@ -243,6 +243,91 @@ def init_db():
             );
         """)
 
+        # ── conversation_threads (topic threading engine) ─────────
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS conversation_threads (
+                id                TEXT PRIMARY KEY,
+                conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                centroid_embedding vector({_dim}),
+                message_ids       TEXT[] DEFAULT '{{}}',
+                message_count     INTEGER DEFAULT 0,
+                summary           TEXT DEFAULT '',
+                label             TEXT DEFAULT '',
+                last_active       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_conv "
+            "ON conversation_threads(conversation_id, last_active DESC);"
+        )
+        try:
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_threads_emb
+                ON conversation_threads USING hnsw (centroid_embedding vector_cosine_ops);
+            """)
+        except Exception:
+            pass
+
+        # ── research_insights (extracted knowledge units) ─────────
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS research_insights (
+                id                SERIAL PRIMARY KEY,
+                conversation_id   TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                thread_id         TEXT REFERENCES conversation_threads(id) ON DELETE SET NULL,
+                insight_type      TEXT NOT NULL DEFAULT 'observation',
+                insight_text      TEXT NOT NULL,
+                embedding         vector({_dim}),
+                confidence_score  FLOAT DEFAULT 0.8,
+                source_message_id TEXT,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        try:
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_insights_emb
+                ON research_insights USING hnsw (embedding vector_cosine_ops);
+            """)
+        except Exception:
+            pass
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_insights_conv "
+            "ON research_insights(conversation_id, created_at DESC);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_insights_thread "
+            "ON research_insights(thread_id);"
+        )
+
+        # ── concept_links (cross-thread concept graph) ────────────
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS concept_links (
+                id          SERIAL PRIMARY KEY,
+                concept     TEXT NOT NULL,
+                embedding   vector({_dim}),
+                source_type TEXT NOT NULL DEFAULT 'insight',
+                source_id   TEXT NOT NULL,
+                conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+                thread_id   TEXT REFERENCES conversation_threads(id) ON DELETE SET NULL,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        try:
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_concepts_emb
+                ON concept_links USING hnsw (embedding vector_cosine_ops);
+            """)
+        except Exception:
+            pass
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_concepts_conv "
+            "ON concept_links(conversation_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_concepts_text "
+            "ON concept_links(concept);"
+        )
+
         cur.close()
         logger.info("Database initialized – intent-gated architecture ready")
         return True
@@ -1084,6 +1169,546 @@ def delete_conversation_state(conversation_id: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Error deleting conversation state: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONVERSATION THREADS (topic threading engine)
+# ═══════════════════════════════════════════════════════════════════
+
+def create_thread(
+    thread_id: str,
+    conversation_id: str,
+    centroid_embedding,
+    label: str = "",
+) -> bool:
+    """Create a new conversation thread with an initial centroid."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = centroid_embedding.tolist() if isinstance(centroid_embedding, np.ndarray) else centroid_embedding
+        cur.execute("""
+            INSERT INTO conversation_threads
+                (id, conversation_id, centroid_embedding, label, message_count)
+            VALUES (%s, %s, %s::vector, %s, 1)
+            ON CONFLICT (id) DO NOTHING;
+        """, (thread_id, conversation_id, emb, label))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error creating thread: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def get_threads(conversation_id: str) -> list[dict]:
+    """Return all threads for a conversation, most recent first."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, conversation_id, centroid_embedding, message_ids,
+                   message_count, summary, label, last_active, created_at
+            FROM conversation_threads
+            WHERE conversation_id = %s
+            ORDER BY last_active DESC;
+        """, (conversation_id,))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "conversation_id": r[1],
+                "centroid_embedding": r[2], "message_ids": r[3] or [],
+                "message_count": r[4], "summary": r[5],
+                "label": r[6], "last_active": r[7].isoformat() if r[7] else None,
+                "created_at": r[8].isoformat() if r[8] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching threads: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def get_thread(thread_id: str) -> dict | None:
+    """Return a single thread by ID."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, conversation_id, centroid_embedding, message_ids,
+                   message_count, summary, label, last_active, created_at
+            FROM conversation_threads WHERE id = %s;
+        """, (thread_id,))
+        r = cur.fetchone()
+        cur.close()
+        if not r:
+            return None
+        return {
+            "id": r[0], "conversation_id": r[1],
+            "centroid_embedding": r[2], "message_ids": r[3] or [],
+            "message_count": r[4], "summary": r[5],
+            "label": r[6], "last_active": r[7].isoformat() if r[7] else None,
+            "created_at": r[8].isoformat() if r[8] else None,
+        }
+    except Exception as e:
+        logger.error(f"Error fetching thread {thread_id}: {e}")
+        return None
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def update_thread_centroid(thread_id: str, centroid_embedding, message_id: str | None = None) -> bool:
+    """Update a thread's centroid embedding and optionally append a message ID."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = centroid_embedding.tolist() if isinstance(centroid_embedding, np.ndarray) else centroid_embedding
+        if message_id:
+            cur.execute("""
+                UPDATE conversation_threads
+                SET centroid_embedding = %s::vector,
+                    message_ids = array_append(message_ids, %s),
+                    message_count = message_count + 1,
+                    last_active = CURRENT_TIMESTAMP
+                WHERE id = %s;
+            """, (emb, message_id, thread_id))
+        else:
+            cur.execute("""
+                UPDATE conversation_threads
+                SET centroid_embedding = %s::vector,
+                    message_count = message_count + 1,
+                    last_active = CURRENT_TIMESTAMP
+                WHERE id = %s;
+            """, (emb, thread_id))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread centroid: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def update_thread_summary(thread_id: str, summary: str) -> bool:
+    """Store or refresh the progressive summary for a thread."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE conversation_threads
+            SET summary = %s, last_active = CURRENT_TIMESTAMP
+            WHERE id = %s;
+        """, (summary, thread_id))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread summary: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def update_thread_label(thread_id: str, label: str) -> bool:
+    """Update the human-readable label of a thread."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE conversation_threads SET label = %s WHERE id = %s;",
+            (label, thread_id),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread label: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def find_nearest_thread(conversation_id: str, embedding, threshold: float = 0.55):
+    """Find the most similar thread centroid.  Returns (thread_id, similarity) or None."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        cur.execute("""
+            SELECT id, 1 - (centroid_embedding <=> %s::vector) AS similarity
+            FROM conversation_threads
+            WHERE conversation_id = %s
+            ORDER BY centroid_embedding <=> %s::vector
+            LIMIT 1;
+        """, (emb, conversation_id, emb))
+        row = cur.fetchone()
+        cur.close()
+        if row and row[1] >= threshold:
+            return {"thread_id": row[0], "similarity": row[1]}
+        return None
+    except Exception as e:
+        logger.error(f"Error finding nearest thread: {e}")
+        return None
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def count_threads(conversation_id: str) -> int:
+    """Return how many threads exist for a conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM conversation_threads WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        count = cur.fetchone()[0]
+        cur.close()
+        return count
+    except Exception as e:
+        logger.error(f"Error counting threads: {e}")
+        return 0
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def delete_threads_for_conversation(conversation_id: str) -> bool:
+    """Delete all threads for a conversation (cascade handles FKs)."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM conversation_threads WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting threads: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  RESEARCH INSIGHTS (extracted knowledge units)
+# ═══════════════════════════════════════════════════════════════════
+
+def create_insight(
+    conversation_id: str,
+    insight_type: str,
+    insight_text: str,
+    embedding=None,
+    thread_id: str | None = None,
+    confidence_score: float = 0.8,
+    source_message_id: str | None = None,
+) -> int | None:
+    """Store a research insight.  Returns the new row ID or None."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = None
+        if embedding is not None:
+            emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        cur.execute("""
+            INSERT INTO research_insights
+                (conversation_id, thread_id, insight_type, insight_text,
+                 embedding, confidence_score, source_message_id)
+            VALUES (%s, %s, %s, %s, %s::vector, %s, %s)
+            RETURNING id;
+        """, (conversation_id, thread_id, insight_type, insight_text,
+              emb, confidence_score, source_message_id))
+        row_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        return row_id
+    except Exception as e:
+        logger.error(f"Error creating insight: {e}")
+        return None
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def get_insights(conversation_id: str, limit: int = 50) -> list[dict]:
+    """Return recent insights for a conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, conversation_id, thread_id, insight_type,
+                   insight_text, confidence_score, source_message_id, created_at
+            FROM research_insights
+            WHERE conversation_id = %s
+            ORDER BY created_at DESC LIMIT %s;
+        """, (conversation_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "conversation_id": r[1], "thread_id": r[2],
+                "insight_type": r[3], "insight_text": r[4],
+                "confidence_score": r[5], "source_message_id": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching insights: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def get_insights_for_thread(thread_id: str, limit: int = 20) -> list[dict]:
+    """Return insights for a specific thread."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, conversation_id, thread_id, insight_type,
+                   insight_text, confidence_score, source_message_id, created_at
+            FROM research_insights
+            WHERE thread_id = %s
+            ORDER BY created_at DESC LIMIT %s;
+        """, (thread_id, limit))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "conversation_id": r[1], "thread_id": r[2],
+                "insight_type": r[3], "insight_text": r[4],
+                "confidence_score": r[5], "source_message_id": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching thread insights: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def search_similar_insights(embedding, k: int = 5, conversation_id: str | None = None) -> list[dict]:
+    """Semantic search across research insights. Optionally scoped to one conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        if conversation_id:
+            cur.execute("""
+                SELECT id, conversation_id, thread_id, insight_type,
+                       insight_text, confidence_score,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM research_insights
+                WHERE conversation_id = %s AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector LIMIT %s;
+            """, (emb, conversation_id, emb, k))
+        else:
+            cur.execute("""
+                SELECT id, conversation_id, thread_id, insight_type,
+                       insight_text, confidence_score,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM research_insights
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector LIMIT %s;
+            """, (emb, emb, k))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "conversation_id": r[1], "thread_id": r[2],
+                "insight_type": r[3], "insight_text": r[4],
+                "confidence_score": r[5], "similarity": r[6],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error searching similar insights: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def delete_insights_for_conversation(conversation_id: str) -> bool:
+    """Delete all insights for a conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM research_insights WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting insights: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONCEPT LINKS (cross-thread knowledge graph)
+# ═══════════════════════════════════════════════════════════════════
+
+def create_concept_link(
+    concept: str,
+    embedding,
+    source_type: str,
+    source_id: str,
+    conversation_id: str,
+    thread_id: str | None = None,
+) -> int | None:
+    """Store a concept link.  Returns new row ID or None."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        cur.execute("""
+            INSERT INTO concept_links
+                (concept, embedding, source_type, source_id,
+                 conversation_id, thread_id)
+            VALUES (%s, %s::vector, %s, %s, %s, %s)
+            RETURNING id;
+        """, (concept, emb, source_type, source_id, conversation_id, thread_id))
+        row_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        return row_id
+    except Exception as e:
+        logger.error(f"Error creating concept link: {e}")
+        return None
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def get_concepts_for_conversation(conversation_id: str) -> list[dict]:
+    """Return all concept links for a conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, concept, source_type, source_id, thread_id, created_at
+            FROM concept_links
+            WHERE conversation_id = %s
+            ORDER BY created_at DESC;
+        """, (conversation_id,))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "concept": r[1], "source_type": r[2],
+                "source_id": r[3], "thread_id": r[4],
+                "created_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching concepts: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def search_similar_concepts(embedding, k: int = 5, conversation_id: str | None = None) -> list[dict]:
+    """Semantic search across concept links."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        if conversation_id:
+            cur.execute("""
+                SELECT id, concept, source_type, source_id, thread_id,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM concept_links
+                WHERE conversation_id = %s AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector LIMIT %s;
+            """, (emb, conversation_id, emb, k))
+        else:
+            cur.execute("""
+                SELECT id, concept, source_type, source_id, thread_id,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM concept_links
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector LIMIT %s;
+            """, (emb, emb, k))
+        rows = cur.fetchall()
+        cur.close()
+        return [
+            {
+                "id": r[0], "concept": r[1], "source_type": r[2],
+                "source_id": r[3], "thread_id": r[4], "similarity": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error(f"Error searching concepts: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def delete_concepts_for_conversation(conversation_id: str) -> bool:
+    """Delete all concept links for a conversation."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM concept_links WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting concepts: {e}")
         return False
     finally:
         if conn is not None:

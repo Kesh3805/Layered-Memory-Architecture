@@ -26,7 +26,10 @@ from .prompts import (
     GREETING_PERSONALIZATION_FRAME,
     BEHAVIOR_STATE_FRAME,
     PERSONALITY_FRAMES,
+    PRECISION_FRAMES,
     RESPONSE_LENGTH_HINTS,
+    THREAD_CONTEXT_FRAME,
+    RESEARCH_CONTEXT_FRAME,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,7 +48,10 @@ def build_messages(
     behavior_context: str = "",
     meta_instruction: str = "",
     personality_mode: str = "default",
+    precision_mode: str = "analytical",
     response_length_hint: str = "normal",
+    thread_context: dict | None = None,
+    research_context: dict | None = None,
 ) -> list[dict]:
     """Assemble the OpenAI-format message list for the LLM.
 
@@ -73,8 +79,14 @@ def build_messages(
         Specific behavioral instruction override.
     personality_mode : str
         Personality mode: default | concise | detailed | playful | empathetic.
+    precision_mode : str
+        Research precision mode: concise | analytical | speculative | implementation | adversarial.
     response_length_hint : str
         Suggested response length: brief | normal | detailed.
+    thread_context : dict | None
+        Active thread info (summary, label) for injection.
+    research_context : dict | None
+        Related insights and concept links for injection.
     """
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -92,6 +104,10 @@ def build_messages(
     _personality_text = PERSONALITY_FRAMES.get(personality_mode, "")
     if _personality_text:
         _behavior_parts.append(_personality_text)
+    # Precision mode (research engine) takes priority over personality
+    _precision_text = PRECISION_FRAMES.get(precision_mode, "")
+    if _precision_text:
+        _behavior_parts.append(_precision_text)
     _length_text = RESPONSE_LENGTH_HINTS.get(response_length_hint, "")
     if _length_text:
         _behavior_parts.append(_length_text)
@@ -103,6 +119,37 @@ def build_messages(
                 meta_instruction=meta_instruction,
             ).strip(),
         })
+
+    # ── Thread context (active research thread) ───────────────────────
+    if thread_context and thread_context.get("thread_summary"):
+        messages.append({
+            "role": "system",
+            "content": THREAD_CONTEXT_FRAME.format(
+                thread_label=thread_context.get("thread_label", "Unnamed thread"),
+                thread_summary=thread_context["thread_summary"],
+            ).strip(),
+        })
+
+    # ── Research context (insights + concepts) ───────────────────────
+    if research_context:
+        insights = research_context.get("related_insights", [])
+        concepts = research_context.get("concept_links", [])
+        if insights or concepts:
+            insights_text = ""
+            if insights:
+                lines = [f"- [{i['type']}] {i['text']}" for i in insights[:5]]
+                insights_text = "Relevant prior insights:\n" + "\n".join(lines)
+            concepts_text = ""
+            if concepts:
+                concept_names = [c["concept"] for c in concepts[:8]]
+                concepts_text = "Related concepts: " + ", ".join(concept_names)
+            messages.append({
+                "role": "system",
+                "content": RESEARCH_CONTEXT_FRAME.format(
+                    insights_section=insights_text,
+                    concepts_section=concepts_text,
+                ).strip(),
+            })
 
     # ── Profile context ───────────────────────────────────────────────────
     if profile_context:

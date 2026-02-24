@@ -274,8 +274,8 @@ class StateTracker:
         # ── Interaction pattern classification ────────────────────────────
         state.interaction_pattern = StateTracker._classify_pattern(state)
 
-        # ── Dynamic personality mode ──────────────────────────────────────
-        state.dynamic_personality_mode = StateTracker._compute_personality_mode(state)
+        # ── Precision mode (research-oriented) ─────────────────────────
+        state.precision_mode = StateTracker._compute_precision_mode(state, q_lower)
 
         return state
 
@@ -357,24 +357,50 @@ class StateTracker:
         return "normal"
 
     @staticmethod
-    def _compute_personality_mode(state: ConversationState) -> str:
-        """Decide what personality mode fits the current conversation feel."""
-        if state.emotional_tone == "frustrated":
-            return "empathetic"
+    def _compute_precision_mode(state: ConversationState, q_lower: str = "") -> str:
+        """Select research precision mode based on structural signals.
 
-        if state.emotional_tone == "playful":
-            return "playful"
+        Modes:
+          - concise:          Short, direct answers (rapid-fire, short queries)
+          - analytical:       Thorough, structured analysis (default for research)
+          - speculative:      Hypothesis exploration ("what if", conditional)
+          - implementation:   Code/build-focused (technical terms, code signals)
+          - adversarial:      Challenge assumptions ("but", "however", "wrong")
+        """
+        # Adversarial: user is pushing back or challenging
+        _adversarial_signals = {
+            "wrong", "incorrect", "disagree", "but what about",
+            "that's not right", "you're wrong", "however",
+            "counterpoint", "devil's advocate", "push back",
+            "challenge", "flaw", "problem with that",
+        }
+        if any(sig in q_lower for sig in _adversarial_signals):
+            return "adversarial"
 
+        # Implementation: code/build signals
+        _impl_signals = {
+            "implement", "code", "build", "create", "write",
+            "function", "class", "module", "api", "endpoint",
+            "database", "deploy", "configure", "setup", "install",
+            "dockerfile", "script", "refactor", "debug", "fix",
+        }
+        if any(sig in q_lower for sig in _impl_signals):
+            return "implementation"
+
+        # Speculative: hypothesis / conditional framing
+        _speculative_signals = {
+            "what if", "hypothetically", "suppose", "imagine",
+            "could we", "would it", "might", "possibly",
+            "speculate", "theory", "assume", "scenario",
+        }
+        if any(sig in q_lower for sig in _speculative_signals):
+            return "speculative"
+
+        # Concise: rapid-fire or very short queries
         if state.interaction_pattern == "rapid_fire":
             return "concise"
+        if state.short_query_streak >= 3:
+            return "concise"
 
-        if state.interaction_pattern == "testing":
-            return "playful"
-
-        if state.emotional_tone == "curious":
-            return "detailed"
-
-        if state.message_count > 10 and state.avg_query_length > 20:
-            return "detailed"
-
-        return "default"
+        # Default: analytical
+        return "analytical"

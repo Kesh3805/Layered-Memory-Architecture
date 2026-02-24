@@ -57,6 +57,8 @@ from conversation_state import (
     ConversationState, StateTracker, get_or_create_state, set_state, clear_state,
 )
 from behavior_engine import BehaviorEngine, BehaviorDecision
+from topic_threading import resolve_thread, get_thread_context
+from research_memory import get_research_context, extract_concepts, link_concepts, extract_insights
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -92,7 +94,7 @@ async def lifespan(app: FastAPI):  # noqa: D401
 # ---------------------------------------------------------------------------
 #  App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="RAG Chat", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chat", version="6.0.0", lifespan=lifespan)
 _raw_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 _allowed_origins = _raw_origins if _raw_origins else ["*"]
 app.add_middleware(
@@ -187,7 +189,12 @@ class PipelineResult:
     behavior_context: str = ""
     meta_instruction: str = ""
     personality_mode: str = "default"
+    precision_mode: str = "analytical"
     response_length_hint: str = "normal"
+    # ── Research engine outputs ─────────────────────────────
+    active_thread_id: str = ""
+    thread_context: Optional[dict] = None
+    research_context: Optional[dict] = None
 
 
 def _profile_entries_to_text(entries: list[dict]) -> str:
@@ -273,9 +280,29 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         logger.info(
             f"Behavior: mode={behavior_decision.behavior_mode}, "
             f"personality={behavior_decision.personality_mode}, "
+            f"precision={behavior_decision.precision_mode}, "
             f"triggers={behavior_decision.triggers}, "
             f"skip_retrieval={behavior_decision.skip_retrieval}"
         )
+
+    # Step 4c: Topic threading — resolve which thread this message belongs to
+    active_thread_id = ""
+    thread_context = None
+    research_context_data = None
+    if settings.THREAD_ENABLED and DB_ENABLED:
+        thread_result = resolve_thread(cid, query_embedding, db_enabled=DB_ENABLED)
+        active_thread_id = thread_result.thread_id
+        if active_thread_id:
+            thread_context = get_thread_context(cid, active_thread_id)
+            logger.info(
+                f"Thread: {active_thread_id[:8]}… "
+                f"(new={thread_result.is_new}, sim={thread_result.similarity:.3f}, "
+                f"msgs={thread_result.message_count})"
+            )
+
+    # Step 4d: Research context — gather related insights + concepts
+    if settings.RESEARCH_INSIGHTS_ENABLED and DB_ENABLED:
+        research_context_data = get_research_context(cid, query_embedding, active_thread_id, db_enabled=DB_ENABLED)
 
     # Step 5: Context features + policy resolve
     features = extract_context_features(
@@ -384,7 +411,15 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         retrieval_info["behavior_mode"] = behavior_decision.behavior_mode
         retrieval_info["behavior_triggers"] = behavior_decision.triggers
         retrieval_info["personality_mode"] = behavior_decision.personality_mode
+        retrieval_info["precision_mode"] = behavior_decision.precision_mode
         retrieval_info["response_length_hint"] = behavior_decision.response_length_hint
+
+    # Inject research engine metadata
+    if active_thread_id:
+        retrieval_info["active_thread_id"] = active_thread_id
+    if research_context_data:
+        retrieval_info["research_insights_count"] = len(research_context_data.get("related_insights", []))
+        retrieval_info["concept_links_count"] = len(research_context_data.get("concept_links", []))
 
     return Hooks.run_before_generation(PipelineResult(
         query=query,
@@ -406,7 +441,11 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         behavior_context=behavior_decision.behavior_context,
         meta_instruction=behavior_decision.meta_instruction,
         personality_mode=behavior_decision.personality_mode,
+        precision_mode=behavior_decision.precision_mode,
         response_length_hint=behavior_decision.response_length_hint,
+        active_thread_id=active_thread_id,
+        thread_context=thread_context,
+        research_context=research_context_data,
     ))
 
 
@@ -467,6 +506,41 @@ def persist_after_response(p: PipelineResult, response_text: str):
                 from conversation_state import get_or_create_state as _get_state
                 conv_st = _get_state(p.cid)
                 query_db.save_conversation_state(p.cid, conv_st.to_dict())
+
+            # Research extraction: insights + concepts (async-safe, non-blocking)
+            if settings.RESEARCH_INSIGHTS_ENABLED:
+                try:
+                    from llm.client import completion as _completion
+                    insights = extract_insights(
+                        p.query, response_text,
+                        conversation_id=p.cid,
+                        thread_id=p.active_thread_id or None,
+                    )
+                except Exception as e:
+                    logger.error(f"Insight extraction error: {e}")
+
+            if settings.CONCEPT_LINKING_ENABLED:
+                try:
+                    combined = f"{p.query} {response_text}"
+                    concepts = extract_concepts(combined)
+                    if concepts:
+                        link_concepts(
+                            concepts,
+                            source_type="message",
+                            source_id=p.cid,
+                            conversation_id=p.cid,
+                            thread_id=p.active_thread_id or None,
+                        )
+                except Exception as e:
+                    logger.error(f"Concept linking error: {e}")
+
+            # Thread summarization check
+            if settings.THREAD_ENABLED and p.active_thread_id:
+                try:
+                    from thread_summarizer import maybe_summarize
+                    maybe_summarize(p.active_thread_id, p.cid)
+                except Exception as e:
+                    logger.error(f"Thread summary error: {e}")
         except Exception as e:
             logger.error(f"Persist error: {e}")
 
@@ -590,6 +664,63 @@ def regenerate_last_response(req: RegenerateRequest):
 #  PROFILE ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ── Research engine endpoints ─────────────────────────────────────────────
+
+@app.get("/conversations/{conversation_id}/threads")
+def list_threads(conversation_id: str):
+    """List all topic threads for a conversation."""
+    if not DB_ENABLED:
+        return {"threads": [], "count": 0}
+    threads = query_db.get_threads(conversation_id)
+    # Strip embeddings from response (too large for JSON)
+    for t in threads:
+        t.pop("centroid_embedding", None)
+    return {"threads": threads, "count": len(threads)}
+
+
+@app.get("/conversations/{conversation_id}/threads/{thread_id}")
+def get_thread_detail(conversation_id: str, thread_id: str):
+    """Get details of a specific thread including insights."""
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    thread = query_db.get_thread(thread_id)
+    if not thread or thread.get("conversation_id") != conversation_id:
+        raise HTTPException(404, "Thread not found")
+    thread.pop("centroid_embedding", None)
+    insights = query_db.get_insights_for_thread(thread_id)
+    return {"thread": thread, "insights": insights}
+
+
+@app.get("/conversations/{conversation_id}/insights")
+def list_insights(conversation_id: str, limit: int = 50):
+    """List research insights for a conversation."""
+    if not DB_ENABLED:
+        return {"insights": [], "count": 0}
+    insights = query_db.get_insights(conversation_id, limit=limit)
+    return {"insights": insights, "count": len(insights)}
+
+
+@app.get("/conversations/{conversation_id}/concepts")
+def list_concepts(conversation_id: str):
+    """List concept links for a conversation."""
+    if not DB_ENABLED:
+        return {"concepts": [], "count": 0}
+    concepts = query_db.get_concepts_for_conversation(conversation_id)
+    return {"concepts": concepts, "count": len(concepts)}
+
+
+@app.get("/concepts/search")
+def search_concepts(q: str, k: int = 10):
+    """Semantic search across all concept links."""
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    embedding = get_query_embedding(q)
+    results = query_db.search_similar_concepts(embedding, k=k)
+    return {"results": results, "count": len(results)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+
 @app.get("/profile")
 def get_profile(user_id: str = settings.DEFAULT_USER_ID):
     if not DB_ENABLED:
@@ -650,7 +781,10 @@ def chat(request: ChatRequest):
             behavior_context=p.behavior_context,
             meta_instruction=p.meta_instruction,
             personality_mode=p.personality_mode,
+            precision_mode=p.precision_mode,
             response_length_hint=p.response_length_hint,
+            thread_context=p.thread_context,
+            research_context=p.research_context,
         )
     except Exception as e:
         logger.error(f"Generation error: {e}")
@@ -709,7 +843,10 @@ def chat_stream(request: ChatRequest):
             behavior_context=p.behavior_context,
             meta_instruction=p.meta_instruction,
             personality_mode=p.personality_mode,
+            precision_mode=p.precision_mode,
             response_length_hint=p.response_length_hint,
+            thread_context=p.thread_context,
+            research_context=p.research_context,
         ):
             if chunk.startswith("0:"):
                 try:

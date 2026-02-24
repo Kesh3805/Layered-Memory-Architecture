@@ -172,6 +172,37 @@ PERSONALITY_FRAMES = {
     ),
 }
 
+# ── Research precision modes (replace personality for research engine) ────
+PRECISION_FRAMES = {
+    "concise": (
+        "Be direct and concise. Skip preambles. Answer in the minimum "
+        "words needed for clarity. Use bullet points over prose."
+    ),
+    "analytical": (
+        "Provide a thorough, structured analysis. Break down the problem "
+        "into components. Compare trade-offs explicitly. Support claims "
+        "with reasoning. Use headings and numbered lists for structure."
+    ),
+    "speculative": (
+        "The user is exploring hypotheticals. Engage with the speculation "
+        "seriously. Explore implications, edge cases, and second-order "
+        "effects. Clearly label assumptions vs. established facts. "
+        "Use conditional language (\"if X, then likely Y\")."
+    ),
+    "implementation": (
+        "The user wants working code or actionable build steps. Lead with "
+        "code examples. Be specific about file paths, function signatures, "
+        "and configuration. Prefer complete, runnable snippets over "
+        "pseudocode. Note dependencies and gotchas."
+    ),
+    "adversarial": (
+        "The user is challenging or stress-testing an idea. Engage honestly "
+        "with their critique. If they're right, acknowledge it clearly. "
+        "If the original claim holds, defend it with specific evidence. "
+        "Don't be defensive — be precise."
+    ),
+}
+
 RESPONSE_LENGTH_HINTS = {
     "brief": "Aim for 1-3 sentences unless the topic demands more.",
     "normal": "",
@@ -223,3 +254,43 @@ Rules:
 - No quotes, no trailing punctuation, no numbering, no prefixes like \
 "Title:".
 - Just the words."""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  RESEARCH ENGINE PROMPTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+INSIGHT_EXTRACTION_PROMPT = """\
+Analyze this Q&A exchange and extract research-relevant insights.
+Return a JSON array of insights. Each insight:
+  {{"type": "<type>", "text": "<concise insight>", "confidence": <0.0-1.0>}}
+
+Types:
+- decision: A choice or preference was stated ("chose X over Y")
+- conclusion: A definitive finding or assertion was established
+- hypothesis: A speculative or conditional claim ("if X then Y")
+- open_question: Something explicitly left unresolved
+- observation: A noteworthy factual observation
+
+Rules:
+1. Only extract insights that are clearly stated or strongly implied.
+2. Keep each insight text concise (1-2 sentences max).
+3. If NO research insights exist, return an empty array: []
+4. Return raw JSON only — no markdown fences, no commentary.
+
+Q: {query}
+A: {response}
+"""
+
+THREAD_CONTEXT_FRAME = """\
+--- Active research thread ---
+Thread: {thread_label}
+{thread_summary}
+--- End thread context ---"""
+
+RESEARCH_CONTEXT_FRAME = """\
+--- Research memory ---
+{insights_section}
+{concepts_section}
+--- End research memory ---"""
+

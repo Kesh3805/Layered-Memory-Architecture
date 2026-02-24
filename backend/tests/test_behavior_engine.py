@@ -14,6 +14,7 @@ class TestBehaviorDecision:
         assert d.reduce_retrieval is False
         assert d.boost_retrieval is False
         assert d.personality_mode == "default"
+        assert d.precision_mode == "analytical"
         assert d.response_length_hint == "normal"
         assert d.triggers == []
 

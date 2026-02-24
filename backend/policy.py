@@ -15,6 +15,7 @@ never edit prompt strings or generator functions.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -67,6 +68,7 @@ class ContextFeatures:
     has_profile_data: bool = False
     profile_name: Optional[str] = None
     conversation_length: int = 0
+    structural_followup_score: float = 0.0  # 0.0-1.0 structural continuation signal
 
 
 def extract_context_features(
@@ -79,6 +81,9 @@ def extract_context_features(
     """Compute deterministic context features from current state."""
     q = query.strip().lower()
     words = q.split()
+
+    # ── Structural follow-up detection ────────────────────────────────────
+    structural_score = _compute_structural_followup_score(q, words, conversation_length)
 
     # ── Greeting detection ────────────────────────────────────────────────
     is_greeting = False
@@ -110,13 +115,14 @@ def extract_context_features(
         is_greeting=is_greeting,
         references_profile=references_profile,
         privacy_signal=(intent == "privacy"),
-        is_followup=(intent == "continuation"),
+        is_followup=(intent == "continuation") or structural_score >= 0.5,
         is_profile_statement=is_profile_statement,
         is_profile_question=is_profile_question,
         topic_similarity=topic_similarity,
         has_profile_data=has_profile_data,
         profile_name=profile_name,
         conversation_length=conversation_length,
+        structural_followup_score=structural_score,
     )
 
 
@@ -215,3 +221,87 @@ class BehaviorPolicy:
             d.greeting_name = None
 
         return d
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  STRUCTURAL FOLLOW-UP DETECTION
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Pronoun dependency — these only make sense if there's prior context
+_PRONOUN_DEPS = re.compile(
+    r"\b(it|its|that|those|this|these|they|them|the same|the above|"
+    r"the previous|the one|the other|said|mentioned|described)\b",
+    re.IGNORECASE,
+)
+
+# Conditional / continuation starters
+_CONTINUATION_STARTERS = [
+    "what if", "but what if", "so if", "but then", "and then",
+    "but what about", "what about", "how about", "and what about",
+    "so then", "but why", "but how", "and how", "then how",
+    "ok but", "okay but", "yeah but", "right but",
+    "also", "additionally", "furthermore", "moreover",
+    "on the other hand", "alternatively", "conversely",
+]
+
+# Variable-reference patterns (common in code/research discussions)
+_VARIABLE_REF = re.compile(
+    r"\b(the (?:function|method|class|variable|table|column|field|param|"
+    r"endpoint|query|result|output|error|issue|bug|problem|solution))\b",
+    re.IGNORECASE,
+)
+
+# Elaboration requests
+_ELABORATION_SIGNALS = [
+    "elaborate", "more detail", "tell me more", "explain further",
+    "go deeper", "expand on", "can you clarify", "more about",
+    "in more depth", "specifically", "in particular",
+    "what do you mean", "unpack that", "break that down",
+]
+
+# Very short follow-ups (must have conversation context)
+_SHORT_FOLLOWUP = re.compile(r"^(why|how|when|where|and|so|really|seriously)\??\s*$", re.IGNORECASE)
+
+
+def _compute_structural_followup_score(q: str, words: list[str], conversation_length: int) -> float:
+    """Compute a 0.0-1.0 structural follow-up score.
+
+    This uses syntactic patterns — NOT embeddings — to detect messages
+    that structurally depend on prior context. This catches follow-ups
+    that the intent classifier might miss.
+
+    Signals (weighted):
+      - Pronoun dependency (it/that/those/this)  → 0.3
+      - Continuation starters (what if/but then)  → 0.4
+      - Variable references (the function/the error) → 0.3
+      - Elaboration requests                      → 0.4
+      - Very short follow-ups (< 4 words)         → 0.3
+    """
+    if conversation_length == 0:
+        return 0.0  # No prior context → can't be a follow-up
+
+    q_lower = q.strip().lower()
+    score = 0.0
+
+    # Pronoun dependency
+    if _PRONOUN_DEPS.search(q_lower):
+        score += 0.3
+
+    # Continuation starters
+    if any(q_lower.startswith(s) for s in _CONTINUATION_STARTERS):
+        score += 0.4
+
+    # Variable references
+    if _VARIABLE_REF.search(q_lower):
+        score += 0.3
+
+    # Elaboration requests
+    if any(sig in q_lower for sig in _ELABORATION_SIGNALS):
+        score += 0.4
+
+    # Very short follow-ups in active conversation
+    if len(words) <= 3 and conversation_length >= 2:
+        if _SHORT_FOLLOWUP.match(q_lower) or q_lower.endswith("?"):
+            score += 0.3
+
+    return min(score, 1.0)

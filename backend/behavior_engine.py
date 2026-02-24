@@ -79,7 +79,8 @@ class BehaviorDecision:
     # ── Response modulation ───────────────────────────────────────────────
     personality_mode: str = "default"
     """Personality mode for prompt framing: default | concise | detailed | playful | empathetic."""
-
+    precision_mode: str = "analytical"
+    """Research precision mode: concise | analytical | speculative | implementation | adversarial."""
     response_length_hint: str = "normal"
     """Suggested response length: brief | normal | detailed."""
 
@@ -134,6 +135,9 @@ class BehaviorEngine:
         q_lower = query.strip().lower()
         words = q_lower.split()
         word_count = len(words)
+
+        # Set precision mode from conversation state (carried through all paths)
+        d.precision_mode = getattr(state, "precision_mode", "analytical")
 
         # ── 1. Frustration recovery ───────────────────────────────────────
         if state.emotional_tone == "frustrated":
@@ -281,7 +285,6 @@ class BehaviorEngine:
         # ── Default: standard mode ────────────────────────────────────────
         if not d.triggers:
             d.triggers.append("standard")
-
         return d
 
 

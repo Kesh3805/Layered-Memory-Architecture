@@ -185,21 +185,29 @@ class TestStateTracker:
         s = ConversationState()
         assert StateTracker._classify_pattern(s) == "normal"
 
-    def test_personality_mode_frustrated(self):
-        s = ConversationState(emotional_tone="frustrated")
-        assert StateTracker._compute_personality_mode(s) == "empathetic"
-
-    def test_personality_mode_playful(self):
-        s = ConversationState(emotional_tone="playful")
-        assert StateTracker._compute_personality_mode(s) == "playful"
-
-    def test_personality_mode_rapid_fire(self):
-        s = ConversationState(interaction_pattern="rapid_fire")
-        assert StateTracker._compute_personality_mode(s) == "concise"
-
-    def test_personality_mode_default(self):
+    def test_precision_mode_adversarial(self):
         s = ConversationState()
-        assert StateTracker._compute_personality_mode(s) == "default"
+        assert StateTracker._compute_precision_mode(s, "that's not right") == "adversarial"
+
+    def test_precision_mode_implementation(self):
+        s = ConversationState()
+        assert StateTracker._compute_precision_mode(s, "implement a function") == "implementation"
+
+    def test_precision_mode_speculative(self):
+        s = ConversationState()
+        assert StateTracker._compute_precision_mode(s, "what if we used redis") == "speculative"
+
+    def test_precision_mode_concise_rapid_fire(self):
+        s = ConversationState(interaction_pattern="rapid_fire")
+        assert StateTracker._compute_precision_mode(s) == "concise"
+
+    def test_precision_mode_concise_short_streak(self):
+        s = ConversationState(short_query_streak=3)
+        assert StateTracker._compute_precision_mode(s) == "concise"
+
+    def test_precision_mode_default_analytical(self):
+        s = ConversationState()
+        assert StateTracker._compute_precision_mode(s) == "analytical"
 
     def test_short_query_streak(self):
         s = ConversationState()

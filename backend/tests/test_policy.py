@@ -10,6 +10,7 @@ from policy import (
     ContextFeatures,
     extract_context_features,
     PolicyDecision,
+    _compute_structural_followup_score,
 )
 
 
@@ -179,3 +180,50 @@ class TestExtractContextFeatures:
     def test_personal_ref_signal(self):
         cf = extract_context_features("what is my job", "general")
         assert cf.references_profile
+
+    def test_structural_followup_score_populated(self):
+        cf = extract_context_features("what about that one", "general", conversation_length=3)
+        assert cf.structural_followup_score > 0
+
+    def test_structural_followup_score_zero_first_message(self):
+        cf = extract_context_features("hello world", "general", conversation_length=0)
+        assert cf.structural_followup_score == 0.0
+
+
+# ─── Structural Follow-up Score ───────────────────────────────────────────
+
+class TestStructuralFollowupScore:
+    def test_zero_for_first_message(self):
+        assert _compute_structural_followup_score("anything", ["anything"], 0) == 0.0
+
+    def test_pronoun_dependency(self):
+        score = _compute_structural_followup_score("explain it further", ["explain", "it", "further"], 2)
+        assert score >= 0.3
+
+    def test_continuation_starter(self):
+        score = _compute_structural_followup_score("but what about caching", ["but", "what", "about", "caching"], 2)
+        assert score >= 0.4
+
+    def test_elaboration_request(self):
+        score = _compute_structural_followup_score("can you elaborate on that", ["can", "you", "elaborate", "on", "that"], 2)
+        assert score >= 0.4
+
+    def test_short_followup_question(self):
+        score = _compute_structural_followup_score("why?", ["why?"], 3)
+        assert score >= 0.3
+
+    def test_combined_signals_capped_at_1(self):
+        # Pronoun + continuation + elaboration + variable ref — should cap at 1.0
+        score = _compute_structural_followup_score(
+            "but can you elaborate on that function",
+            ["but", "can", "you", "elaborate", "on", "that", "function"], 5
+        )
+        assert score <= 1.0
+
+    def test_no_signals(self):
+        score = _compute_structural_followup_score(
+            "explain quantum computing in detail",
+            ["explain", "quantum", "computing", "in", "detail"], 3
+        )
+        # No pronouns, no continuation starters, no elaboration keywords
+        assert score < 0.4

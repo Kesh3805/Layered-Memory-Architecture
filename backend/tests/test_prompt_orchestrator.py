@@ -22,9 +22,10 @@ QUERY = "What is pgvector?"
 # ─── Baseline structure ───────────────────────────────────────────────────
 
 def test_minimal_messages():
-    """Minimal call: system prompt + user query only."""
+    """Minimal call: system prompt + precision frame + user query."""
     msgs = build_messages(QUERY)
-    assert len(msgs) == 2
+    # Default precision_mode="analytical" always injects a behavior frame
+    assert len(msgs) == 3
     assert msgs[0] == {"role": "system", "content": SYSTEM_PROMPT}
     assert msgs[-1] == {"role": "user", "content": QUERY}
 
@@ -126,8 +127,8 @@ def test_chat_history_fallback_when_no_curated():
 
 def test_no_history_when_both_none():
     msgs = build_messages(QUERY, chat_history=None, curated_history=None)
-    # system prompt + user query only
-    assert len(msgs) == 2
+    # system prompt + precision frame + user query
+    assert len(msgs) == 3
 
 
 def test_history_appears_before_user_query():
@@ -174,10 +175,13 @@ def test_behavior_frame_injected_when_context_provided():
 
 
 def test_behavior_frame_not_injected_when_empty():
-    """No behavior frame when all behavior params are defaults."""
+    """With default precision_mode, behavior frame is still injected."""
     msgs = build_messages(QUERY)
-    # Should be only SYSTEM_PROMPT + user query
-    assert len(msgs) == 2
+    # Default "analytical" precision always creates a behavior frame
+    assert len(msgs) == 3
+    # The analytical frame text should be in the behavior frame
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    assert "structured analysis" in contents.lower() or "analytical" in contents.lower()
 
 
 def test_behavior_frame_between_greeting_and_profile():
@@ -206,6 +210,34 @@ def test_personality_mode_injected():
     contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
     # The concise personality frame should be included
     assert "concise" in contents.lower() or "brief" in contents.lower() or "shorter" in contents.lower()
+
+
+def test_precision_mode_injected():
+    """Precision mode text appears in system messages."""
+    msgs = build_messages(QUERY, behavior_context="Info.", precision_mode="adversarial")
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    # The adversarial frame should mention stress-testing or critique
+    assert "stress-testing" in contents.lower() or "critique" in contents.lower()
+
+
+def test_thread_context_injected():
+    """Thread context (label + summary) appears in system messages."""
+    ctx = {"thread_label": "RAG Architecture", "thread_summary": "Discussing vector search approaches."}
+    msgs = build_messages(QUERY, behavior_context="Info.", thread_context=ctx)
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    assert "RAG Architecture" in contents
+    assert "vector search" in contents
+
+
+def test_research_context_injected():
+    """Research insights and concepts appear in system messages."""
+    ctx = {
+        "related_insights": [{"type": "decision", "text": "Use pgvector for embeddings"}],
+        "concept_links": [{"concept": "pgvector"}, {"concept": "embeddings"}],
+    }
+    msgs = build_messages(QUERY, behavior_context="Info.", research_context=ctx)
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    assert "pgvector" in contents
 
 
 def test_meta_instruction_injected():

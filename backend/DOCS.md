@@ -1,6 +1,6 @@
 # Backend Implementation Documentation
 
-> **Version 5.0.0** — Behavior-aware policy-driven intent-gated RAG chat framework
+> **Version 6.0.0** — Research-intelligence RAG engine with topic threading, precision modes, and concept linking
 
 ---
 
@@ -20,6 +20,9 @@
    - [cache.py — Optional Redis](#cachepy--optional-redis)
    - [worker.py — Background Tasks](#workerpy--background-tasks)
    - [cli.py — Command Line Interface](#clipy--command-line-interface)
+   - [topic_threading.py — Topic Threading](#topic_threadingpy--topic-threading)
+   - [research_memory.py — Research Memory](#research_memorypy--research-memory)
+   - [thread_summarizer.py — Thread Summarizer](#thread_summarizerpy--thread-summarizer)
    - [conversation_state.py — Conversational State](#conversation_statepy--conversational-state)
    - [behavior_engine.py — Behavioral Routing](#behavior_enginepy--behavioral-routing)
    - [llm/ Package](#llm-package)
@@ -38,13 +41,16 @@
 Chatapp/
 ├── backend/                        # All Python server code
 │   ├── __init__.py                 # Package marker
-│   ├── main.py                     # FastAPI app + pipeline + all endpoints (~770 lines)
-│   ├── settings.py                 # Centralized env-driven config (~45 settings)
-│   ├── conversation_state.py       # Per-conversation behavioral state tracking
-│   ├── behavior_engine.py          # Behavioral routing layer (8 modes)
-│   ├── policy.py                   # BehaviorPolicy engine (deterministic rules)
+│   ├── main.py                     # FastAPI app + pipeline + all endpoints (~900 lines)
+│   ├── settings.py                 # Centralized env-driven config (~53 settings)
+│   ├── conversation_state.py       # Per-conversation behavioral state + precision modes
+│   ├── behavior_engine.py          # Behavioral routing layer (8 modes + precision_mode)
+│   ├── topic_threading.py          # Topic threading engine (EMA centroids, thread resolution)
+│   ├── research_memory.py          # Research insight extraction + concept linking
+│   ├── thread_summarizer.py        # Per-thread progressive summarization
+│   ├── policy.py                   # BehaviorPolicy engine (deterministic rules + structural follow-up)
 │   ├── context_manager.py          # Token budgeting, history fitting, progressive summarization
-│   ├── query_db.py                 # PostgreSQL + pgvector persistence (1012 lines, 31 functions)
+│   ├── query_db.py                 # PostgreSQL + pgvector persistence (1600+ lines, 50+ functions)
 │   ├── vector_store.py             # Document search (pgvector + in-memory fallback)
 │   ├── embeddings.py               # BAAI/bge-base-en-v1.5 local embeddings (768-dim)
 │   ├── chunker.py                  # Paragraph → sentence → character text splitting
@@ -67,17 +73,20 @@ Chatapp/
 │   │       ├── cerebras.py         # Cerebras Cloud SDK
 │   │       ├── openai.py           # OpenAI (also Azure, vLLM, Ollama via base_url)
 │   │       └── anthropic.py        # Anthropic Messages API
-│   └── tests/                      # 190+ unit tests
+│   └── tests/                      # 254 unit tests
 │       ├── conftest.py             # sys.path setup for flat imports
 │       ├── __init__.py
 │       ├── test_chunker.py         # 27 tests — chunk_text edge cases
 │       ├── test_classifier.py      # Intent classification with mocked LLM
 │       ├── test_context_manager.py # Token budgeting + summarization
-│       ├── test_policy.py          # BehaviorPolicy rule coverage
-│       ├── test_prompt_orchestrator.py # Message assembly + behavior frame verification
-│       ├── test_settings.py        # Config defaults + env overrides
-│       ├── test_conversation_state.py # Conversation state tracking (30 tests)
-│       └── test_behavior_engine.py # Behavioral routing engine (24 tests)
+│       ├── test_policy.py          # BehaviorPolicy rule coverage + structural follow-up
+│       ├── test_prompt_orchestrator.py # Message assembly + precision modes + thread/research context
+│       ├── test_settings.py        # Config defaults + env overrides + research settings
+│       ├── test_conversation_state.py # Conversation state + precision mode computation
+│       ├── test_behavior_engine.py # Behavioral routing engine (24 tests)
+│       ├── test_topic_threading.py # EMA centroid math + cosine similarity + thread resolution
+│       ├── test_research_memory.py # Concept extraction + insight JSON parsing
+│       └── test_thread_summarizer.py # Thread summarization + labeling + interval logic
 ├── frontend/                       # React 18 + Vite + Tailwind + AI SDK
 │   └── src/
 │       ├── components/ai/          # AI-native observability primitives
@@ -111,9 +120,9 @@ Chatapp/
 | `NewConversationRequest` | Pydantic model: `title` (default "New Chat") |
 | `ProfileEntryRequest` | Pydantic model: `key`, `value`, `category`, `user_id` |
 | `RegenerateRequest` | Pydantic model: `conversation_id`, `user_id` |
-| `PipelineResult` | Dataclass holding all pipeline outputs for generation |
+| `PipelineResult` | Dataclass holding all pipeline outputs for generation (includes precision_mode, active_thread_id, thread_context, research_context) |
 | `run_pipeline(request)` | The shared pipeline — returns `PipelineResult` |
-| `persist_after_response(p, response)` | Background persistence: save messages, detect profile, update topic vector, auto-title |
+| `persist_after_response(p, response)` | Background persistence: save messages, detect profile, update topic vector, auto-title, extract insights, link concepts, thread summarization |
 | `_ingest_knowledge()` | Reads `knowledge/` directory, chunks files, indexes into vector store |
 
 **Pipeline steps (inside `run_pipeline`):**
@@ -124,7 +133,9 @@ Chatapp/
 | 2 | Load history + profile from PostgreSQL (parallel with step 1 using `ThreadPoolExecutor(3)`) |
 | 3 | Classify intent (pre-heuristics → LLM fallback → cache) |
 | 4 | Topic gate: cosine similarity check for `continuation` — demotes to `general` if topic drift detected |
-| 4b | Behavior engine: load/update conversational state, run behavioral routing (8 modes) |
+| 4b | Behavior engine: load/update conversational state, run behavioral routing (8 modes), compute precision_mode |
+| 4c | Thread resolution: resolve_thread() finds/creates thread via embedding centroid similarity |
+| 4d | Research context: get_research_context() fetches related insights + concept links |
 | 5 | Extract `ContextFeatures` + `BehaviorPolicy.resolve()` + behavior overrides + `Hooks.run_policy_override()` |
 | 6 | History pruning: recency window + semantic retrieval of relevant older Q&A |
 | 7 | Selective context assembly: only inject what `PolicyDecision` flags say to inject |
@@ -162,6 +173,8 @@ Chatapp/
 | **Cache** | `ENABLE_CACHE`, `REDIS_URL`, `CACHE_TTL` | False, `redis://localhost:6379/0`, 3600 |
 | **Pipeline** | `DEFAULT_USER_ID`, `HISTORY_FETCH_LIMIT`, `ENABLE_HISTORY_SUMMARIZATION` | `default`, 50, True |
 | **Behavior Engine** | `BEHAVIOR_ENGINE_ENABLED`, `BEHAVIOR_REPETITION_THRESHOLD`, `BEHAVIOR_PATTERN_WINDOW`, `BEHAVIOR_STATE_PERSIST` | True, 0.7, 10, True |
+| **Research Engine** | `THREAD_ENABLED`, `THREAD_ATTACH_THRESHOLD`, `THREAD_SUMMARY_INTERVAL`, `THREAD_MAX_ACTIVE` | True, 0.55, 8, 12 |
+| **Insights & Concepts** | `RESEARCH_INSIGHTS_ENABLED`, `RESEARCH_INSIGHT_MIN_CONFIDENCE`, `CONCEPT_LINKING_ENABLED`, `CONCEPT_LINK_K` | True, 0.6, True, 5 |
 
 ---
 
@@ -181,14 +194,15 @@ Computed features for the current message — input to policy rules:
 - `is_greeting`, `references_profile`, `privacy_signal`
 - `is_followup`, `is_profile_statement`, `is_profile_question`
 - `topic_similarity`, `has_profile_data`, `profile_name`
-- `conversation_length`
+- `conversation_length`, `structural_followup_score`
 
 #### `extract_context_features(query, intent, profile_entries, ...)`
 Computes features from current state:
-1. Greeting detection — pattern match (≤8 words)
-2. Personal reference detection — substring match
-3. Profile statement vs question — prefix match + `?` absence
-4. Profile name extraction — scans for `name`/`first_name`/`full_name`/`username` keys
+1. Structural follow-up score — pronoun deps, continuation starters, elaboration requests, short follow-ups
+2. Greeting detection — pattern match (≤8 words)
+3. Personal reference detection — substring match
+4. Profile statement vs question — prefix match + `?` absence
+5. Profile name extraction — scans for `name`/`first_name`/`full_name`/`username` keys
 
 #### `PolicyDecision` dataclass
 What the pipeline should do — every field is a directive:
@@ -436,6 +450,84 @@ def force_rag_for_questions(features, decision):
 
 ---
 
+### topic_threading.py — Topic Threading
+
+**Purpose:** Groups messages into topical threads using embedding centroid similarity. Each thread has an evolving centroid (EMA-updated), optional summary, and label.
+
+**Key concepts:**
+- **Thread centroids** — EMA (exponential moving average) of message embeddings, L2-normalized
+- **Thread resolution** — For each message, find the nearest thread by cosine similarity. Attach if above `THREAD_ATTACH_THRESHOLD` (0.55), else create a new thread
+- **Thread cap** — At most `THREAD_MAX_ACTIVE` (12) threads per conversation
+
+**Components:**
+
+| Component | Description |
+|---|---|
+| `ThreadResolution` | Dataclass: thread_id, is_new, similarity, thread_summary, thread_label, message_count |
+| `_ema_centroid()` | Updates centroid: simple mean for first 3 messages, then EMA with α=0.3 |
+| `cosine_similarity()` | Pure numpy cosine similarity between two vectors |
+| `resolve_thread()` | Main entry: finds/creates thread, updates centroid, returns ThreadResolution |
+| `get_thread_context()` | Gathers thread summary + recent insights for prompt injection |
+| `should_summarize_thread()` | Returns True at milestone intervals (8, 16, 24… messages) |
+
+---
+
+### research_memory.py — Research Memory
+
+**Purpose:** The "D tier" memory layer — research-specific intelligence. Extracts insights from conversations and links concepts across threads.
+
+**Memory tiers (updated):**
+| Tier | Module | What it stores |
+|---|---|---|
+| A) Episodic | user_queries table | Facts extracted from queries |
+| B) Semantic | user_profile table | User traits and preferences |
+| C) Conversational | conversation_state | Behavioral patterns per conversation |
+| D) Research | research_insights + concept_links | Decisions, conclusions, hypotheses, concept cross-links |
+
+**Insight extraction** — LLM-powered, runs in background after each response:
+- Types: `decision`, `conclusion`, `hypothesis`, `open_question`, `observation`
+- Each insight stored with embedding for semantic search
+- Minimum confidence threshold: `RESEARCH_INSIGHT_MIN_CONFIDENCE` (0.6)
+
+**Concept extraction** — Heuristic (no LLM), runs on every message:
+- Capitalized noun phrases, snake_case/camelCase/PascalCase terms
+- Quoted terms, backtick-quoted code terms, acronyms
+- Deduplicated, embedded, stored as concept_links
+
+**Components:**
+
+| Component | Description |
+|---|---|
+| `INSIGHT_TYPES` | Set: decision, conclusion, hypothesis, open_question, observation |
+| `extract_insights()` | LLM-powered insight extraction + DB storage |
+| `_parse_insights_json()` | Robust JSON parser with markdown fence stripping |
+| `extract_concepts()` | Heuristic noun-phrase extraction (no LLM) |
+| `link_concepts()` | Batch embed + store concept links |
+| `get_research_context()` | Semantic search for related insights + concepts |
+
+---
+
+### thread_summarizer.py — Thread Summarizer
+
+**Purpose:** Generates and maintains per-thread progressive summaries. Summaries compress as threads grow, capturing key findings and direction.
+
+**Design:**
+- Summaries updated at `THREAD_SUMMARY_INTERVAL` milestones (8, 16, 24…)
+- New summaries incorporate previous summary + recent messages
+- Labels auto-generated on first summary
+
+**Components:**
+
+| Component | Description |
+|---|---|
+| `THREAD_SUMMARY_PROMPT` | Template for progressive thread summarization |
+| `THREAD_LABEL_PROMPT` | Template for short label generation (3-6 words) |
+| `summarize_thread()` | Generate/update thread summary via LLM |
+| `generate_thread_label()` | Produce a short human-readable thread label |
+| `maybe_summarize()` | Check interval + summarize if needed |
+
+---
+
 ### conversation_state.py — Conversational State
 
 **Purpose:** The "C tier" memory layer — per-conversation behavioral state tracking. Complements episodic memory (user_queries) and semantic memory (user_profile) with a meta-conversational layer that tracks *how* the user interacts, not *what* they said.
@@ -462,7 +554,7 @@ def force_rag_for_questions(features, decision):
 3. Testing/adversarial behavior (jailbreak, ignore instructions, etc.)
 4. Meta-commentary ("you already said", "that's not helpful", etc.)
 5. Interaction pattern (rapid_fire/exploratory/deep_dive/standard)
-6. Dynamic personality mode based on accumulated signals
+6. Precision mode (concise/analytical/speculative/implementation/adversarial) — query-driven
 
 **In-memory cache:** `_state_cache` with LRU eviction at 200 entries. DB persistence handled by `query_db.save_conversation_state()`.
 
@@ -654,8 +746,20 @@ User message arrives
        ▼
   5b. Behavior engine
      ├── Load/create conversation state (cache + DB fallback)
-     ├── Update state: tone, repetition, testing, meta, pattern
-     └── Evaluate: 8 priority-ordered modes → BehaviorDecision
+     ├── Update state: tone, repetition, testing, meta, pattern, precision_mode
+     └── Evaluate: 8 priority-ordered modes → BehaviorDecision (includes precision_mode)
+       │
+       ▼
+  5c. Thread resolution (if THREAD_ENABLED)
+     ├── Find nearest thread by cosine_similarity(query_embedding, centroid)
+     ├── Attach if similarity > THREAD_ATTACH_THRESHOLD
+     └── Otherwise create new thread (up to THREAD_MAX_ACTIVE)
+       │
+       ▼
+  5d. Research context (if RESEARCH_INSIGHTS_ENABLED)
+     ├── Search similar insights across all threads
+     ├── Search related concept links
+     └── Package into research_context dict for prompt injection
        │
        ▼
   6. Extract ContextFeatures + BehaviorPolicy.resolve() + behavior overrides + Hooks.policy_override()
@@ -691,7 +795,10 @@ User message arrives
       ├── save_user_query (with embedding)
       ├── detect_profile_updates → batch_update_profile
       ├── update_topic_vector (exponential moving average, α=0.3)
-      └── generate_title (if first message in conversation)
+      ├── generate_title (if first message in conversation)
+      ├── extract_insights (LLM-powered → research_insights table)
+      ├── link_concepts (heuristic extraction → concept_links table)
+      └── maybe_summarize (progressive thread summarization at intervals)
 ```
 
 ---
@@ -778,6 +885,16 @@ d:{"finishReason":"stop"}
 | `GET` | `/health` | Health check (DB status, doc count, provider info, version) |
 | `GET` | `/` | Serve React frontend (or fallback HTML) |
 
+### Research (v6.0.0)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/conversations/{id}/threads` | List all threads for a conversation |
+| `GET` | `/conversations/{id}/threads/{tid}` | Get thread details (summary, label, centroid) |
+| `GET` | `/conversations/{id}/insights` | List research insights for a conversation |
+| `GET` | `/conversations/{id}/concepts` | List concept links for a conversation |
+| `GET` | `/concepts/search?q=...&conversation_id=...` | Semantic search for related concepts |
+
 ---
 
 ## Database Schema
@@ -844,6 +961,47 @@ CREATE TABLE conversation_state (
     state_data      JSONB NOT NULL DEFAULT '{}',
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Research engine: topic threads (v6.0.0)
+CREATE TABLE conversation_threads (
+    id                TEXT PRIMARY KEY,
+    conversation_id   TEXT NOT NULL,
+    centroid_embedding vector(768),
+    message_ids       TEXT[] DEFAULT '{}',
+    message_count     INT DEFAULT 0,
+    summary           TEXT DEFAULT '',
+    label             TEXT DEFAULT '',
+    last_active       TIMESTAMPTZ DEFAULT NOW(),
+    created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON conversation_threads USING hnsw (centroid_embedding vector_cosine_ops);
+
+-- Research engine: extracted insights (v6.0.0)
+CREATE TABLE research_insights (
+    id                SERIAL PRIMARY KEY,
+    conversation_id   TEXT NOT NULL,
+    thread_id         TEXT,
+    insight_type      TEXT NOT NULL,
+    insight_text      TEXT NOT NULL,
+    embedding         vector(768),
+    confidence_score  FLOAT DEFAULT 0.0,
+    source_message_id TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON research_insights USING hnsw (embedding vector_cosine_ops);
+
+-- Research engine: concept links (v6.0.0)
+CREATE TABLE concept_links (
+    id                SERIAL PRIMARY KEY,
+    concept           TEXT NOT NULL,
+    embedding         vector(768),
+    source_type       TEXT NOT NULL,
+    source_id         TEXT NOT NULL,
+    conversation_id   TEXT NOT NULL,
+    thread_id         TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX ON concept_links USING hnsw (embedding vector_cosine_ops);
 ```
 
 ---
@@ -909,6 +1067,16 @@ BEHAVIOR_REPETITION_THRESHOLD=0.7        # Jaccard word-overlap threshold
 BEHAVIOR_PATTERN_WINDOW=10               # Messages to consider for pattern detection
 BEHAVIOR_STATE_PERSIST=true              # Persist state to DB (vs in-memory only)
 
+# ── Research Engine (v6.0.0) ──────────────────────────────
+THREAD_ENABLED=true                      # Enable topic threading
+THREAD_ATTACH_THRESHOLD=0.55             # Min cosine similarity to attach to existing thread
+THREAD_SUMMARY_INTERVAL=8               # Summarize every N messages
+THREAD_MAX_ACTIVE=12                     # Max active threads per conversation
+RESEARCH_INSIGHTS_ENABLED=true           # Enable LLM-powered insight extraction
+RESEARCH_INSIGHT_MIN_CONFIDENCE=0.6      # Min confidence for insight storage
+CONCEPT_LINKING_ENABLED=true             # Enable concept cross-linking
+CONCEPT_LINK_K=5                         # Max concept links per search
+
 # ── Server ────────────────────────────────────────────────
 HOST=0.0.0.0
 PORT=8000
@@ -919,18 +1087,21 @@ ALLOWED_ORIGINS=*
 
 ## Test Suite
 
-**190+ tests** across 8 test files in `backend/tests/`:
+**254 tests** across 11 test files in `backend/tests/`:
 
 | File | Tests | Coverage |
 |---|---|---|
 | `test_chunker.py` | 27 | Chunk splitting: paragraphs, sentences, characters, overlap, edge cases, empty input |
 | `test_classifier.py` | ~25 | Pre-heuristic paths (greeting, profile, privacy, continuation), LLM fallback, cache hit, unknown intents |
 | `test_context_manager.py` | ~20 | Token estimation, budget fitting, progressive summarization, edge cases |
-| `test_policy.py` | ~30 | All 5 intents, cross-intent overlays, greeting detection, personal ref signals, feature extraction |
-| `test_prompt_orchestrator.py` | ~22 | Message ordering, frame injection, behavior frame position, personality modes, privacy suppression, history fallback |
-| `test_settings.py` | ~12 | Defaults, env overrides, bool parsing, immutability, behavior engine settings |
-| `test_conversation_state.py` | 30 | State tracking: tone detection, repetition, testing, meta, patterns, cache, serialization |
-| `test_behavior_engine.py` | 24 | All 8 behavior modes, priority ordering, retrieval modulation, personality overrides |
+| `test_policy.py` | ~38 | All 5 intents, cross-intent overlays, greeting detection, personal ref signals, structural follow-up score |
+| `test_prompt_orchestrator.py` | ~26 | Message ordering, frame injection, precision modes, thread context, research context, privacy suppression |
+| `test_settings.py` | ~16 | Defaults, env overrides, bool parsing, immutability, behavior + research engine settings |
+| `test_conversation_state.py` | ~36 | State tracking: tone detection, repetition, testing, meta, patterns, precision mode computation |
+| `test_behavior_engine.py` | ~25 | All 8 behavior modes, priority ordering, retrieval modulation, precision_mode field |
+| `test_topic_threading.py` | 11 | EMA centroid math, cosine similarity, ThreadResolution dataclass |
+| `test_research_memory.py` | ~18 | Concept extraction heuristics, insight JSON parsing, INSIGHT_TYPES validation |
+| `test_thread_summarizer.py` | ~15 | Thread summarization, label generation, interval-based maybe_summarize logic |
 
 **Running tests:**
 ```bash

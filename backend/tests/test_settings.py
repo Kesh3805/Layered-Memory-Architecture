@@ -86,6 +86,20 @@ class TestSettingsDefaults:
         assert settings.BEHAVIOR_PATTERN_WINDOW == 10
         assert settings.BEHAVIOR_STATE_PERSIST is True
 
+    def test_thread_defaults(self):
+        from settings import settings
+        assert settings.THREAD_ENABLED is True
+        assert settings.THREAD_ATTACH_THRESHOLD == pytest.approx(0.55)
+        assert settings.THREAD_SUMMARY_INTERVAL == 8
+        assert settings.THREAD_MAX_ACTIVE == 12
+
+    def test_research_defaults(self):
+        from settings import settings
+        assert settings.RESEARCH_INSIGHTS_ENABLED is True
+        assert settings.RESEARCH_INSIGHT_MIN_CONFIDENCE == pytest.approx(0.6)
+        assert settings.CONCEPT_LINKING_ENABLED is True
+        assert settings.CONCEPT_LINK_K == 5
+
 
 class TestSettingsEnvOverride:
     def test_max_response_tokens_override(self, monkeypatch):
