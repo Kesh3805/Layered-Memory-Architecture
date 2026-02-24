@@ -96,20 +96,30 @@ def build_messages(
             "content": QA_CONTEXT_FRAME.format(qa=similar_qa_context),
         })
 
-    # ── Conversation history (token-budget enforced) ──────────────────────
+    # ── Conversation history (dynamic token-budget enforced) ──────────────
     history = curated_history if curated_history is not None else chat_history
     if history:
+        # Dynamic budget: context window minus preamble minus response reserve.
+        preamble_tokens = sum(context_manager.message_tokens(m) for m in messages)
+        user_msg_tokens = context_manager.estimate_tokens(user_query) + 10
+        dynamic_budget = context_manager.compute_history_budget(
+            context_window=settings.MAX_CONTEXT_WINDOW,
+            response_reserve=settings.MAX_RESPONSE_TOKENS,
+            preamble_tokens=preamble_tokens + user_msg_tokens,
+        )
+        effective_budget = min(settings.MAX_HISTORY_TOKENS, dynamic_budget)
+
         if settings.ENABLE_HISTORY_SUMMARIZATION:
             from .client import completion
             history = context_manager.summarize_old_turns(
                 history,
-                max_history_tokens=settings.MAX_HISTORY_TOKENS,
+                max_history_tokens=effective_budget,
                 completion_fn=completion,
             )
         else:
             history = context_manager.fit_messages_to_budget(
                 history,
-                budget_tokens=settings.MAX_HISTORY_TOKENS,
+                budget_tokens=effective_budget,
             )
         messages.extend(history)
 

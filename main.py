@@ -338,7 +338,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     }
 
     if decision.inject_rag:
-        docs = vector_store.search(query, k=decision.rag_k)
+        docs = vector_store.search(query, k=decision.rag_k, min_similarity=decision.rag_min_similarity)
         rag_context = "\n".join(docs)
         retrieval_info["num_docs"] = len(docs)
         if DB_ENABLED:
@@ -354,7 +354,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                 similar_qa_context = "\n".join(lines)
                 retrieval_info["similar_queries"] = len(similar_queries)
 
-    if decision.inject_qa_history and intent == "continuation" and DB_ENABLED and len(recent_messages) > 2:
+    if decision.inject_qa_history and DB_ENABLED and len(recent_messages) > 2:
         same_conv_qa = query_db.retrieve_same_conversation_queries(
             query_embedding, cid, k=3, min_similarity=SIM_THRESHOLD,
         )
@@ -683,9 +683,12 @@ if _dist.exists() and (_dist / "assets").exists():
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
-    """Prefer React build; fall back to vanilla index.html."""
+    """Serve the React frontend build."""
     react_index = _dist / "index.html"
     if react_index.exists():
         return react_index.read_text(encoding="utf-8")
-    with open("index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    return HTMLResponse(
+        "<h1>RAG Chat</h1>"
+        "<p>Frontend not built. Run <code>cd frontend &amp;&amp; npm run build</code></p>",
+        status_code=200,
+    )

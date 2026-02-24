@@ -50,6 +50,12 @@ CONTINUATION_PRONOUNS = {
     "its", "their", "the same",
 }
 
+# Short continuation cues that indicate a follow-up without pronouns
+CONTINUATION_SIGNALS = {
+    "why", "how", "elaborate", "more", "explain", "details",
+    "specifically", "example", "another", "also",
+}
+
 VALID_INTENTS = {"general", "continuation", "knowledge_base", "profile", "privacy"}
 
 
@@ -81,7 +87,13 @@ def classify_intent(
                 return {"intent": "general", "confidence": 0.97}
 
     # ── Profile statement fast-path ───────────────────────────────────────
-    if "?" not in user_query and any(query_lower.startswith(p) for p in _PROFILE_OPENERS):
+    # Only for SHORT declarative statements.  Longer messages starting with
+    # "I have a question about…" should fall through to the LLM.
+    if (
+        "?" not in user_query
+        and len(_words) <= 15
+        and any(query_lower.startswith(p) for p in _PROFILE_OPENERS)
+    ):
         logger.info("Pre-heuristic: profile statement → profile (no LLM)")
         return {"intent": "profile", "confidence": 0.92}
 
@@ -92,13 +104,17 @@ def classify_intent(
 
     # ── Continuation check (needs context) ────────────────────────────────
     if conversation_context and len(conversation_context) >= 2:
-        words = set(query_lower.split())
-        if (
-            len(words) <= 8
-            and words & CONTINUATION_PRONOUNS
-            and "?" in user_query
+        _raw_words = query_lower.split()
+        words = {w.strip("?!.,;:") for w in _raw_words}
+        word_count = len(_raw_words)
+        has_pronoun = bool(words & CONTINUATION_PRONOUNS)
+        has_signal = bool(words & CONTINUATION_SIGNALS)
+        has_question = "?" in user_query
+        if word_count <= 8 and (
+            (has_pronoun and has_question)        # "What is it used for?"
+            or (has_signal and word_count <= 4)   # "Why?" "Elaborate" "More details"
         ):
-            logger.info("Pre-heuristic: continuation (pronoun + short question)")
+            logger.info("Pre-heuristic: continuation (pronoun/signal + short follow-up)")
             return {"intent": "continuation", "confidence": 0.85}
 
     # ── LLM classification ────────────────────────────────────────────────

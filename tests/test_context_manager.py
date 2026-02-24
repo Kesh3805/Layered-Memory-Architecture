@@ -9,6 +9,8 @@ from context_manager import (
     history_tokens,
     fit_messages_to_budget,
     summarize_old_turns,
+    compute_history_budget,
+    SUMMARY_PREFIX,
 )
 
 
@@ -140,3 +142,48 @@ class TestSummarizeOldTurns:
         result = summarize_old_turns(msgs, max_history_tokens=50, completion_fn=fn, min_recent=4)
         # Can't split further — falls back to fit_messages_to_budget
         assert isinstance(result, list)
+
+    def test_progressive_summary_chains_existing(self):
+        """When history contains a prior summary, the summarizer receives it as seed."""
+        summary_msg = {"role": "system", "content": f"{SUMMARY_PREFIX} User discussed Python basics."}
+        msgs = [summary_msg] + _make_msgs(10, content_chars=500)
+        mock_new_summary = "User discussed Python basics and then moved to pgvector."
+        fn = MagicMock(return_value=mock_new_summary)
+        result = summarize_old_turns(msgs, max_history_tokens=200, completion_fn=fn, min_recent=4)
+        fn.assert_called_once()
+        # The transcript sent to the LLM should contain the prior summary
+        call_args = fn.call_args[0][0]  # first positional arg = messages list
+        user_content = call_args[1]["content"]  # the transcript
+        assert "Python basics" in user_content
+        # Result should have new summary + recent
+        assert result[0]["role"] == "system"
+        assert mock_new_summary in result[0]["content"]
+
+
+# ─── compute_history_budget ───────────────────────────────────────────────
+
+class TestComputeHistoryBudget:
+    def test_basic_budget(self):
+        budget = compute_history_budget(
+            context_window=65536,
+            response_reserve=2048,
+            preamble_tokens=500,
+        )
+        assert budget == 65536 - 2048 - 500
+
+    def test_min_budget_floor(self):
+        budget = compute_history_budget(
+            context_window=4000,
+            response_reserve=3500,
+            preamble_tokens=2000,
+            min_budget=1000,
+        )
+        # 4000 - 3500 - 2000 = -1500, but floor is 1000
+        assert budget == 1000
+
+    def test_zero_preamble(self):
+        budget = compute_history_budget(
+            context_window=8000,
+            response_reserve=2000,
+        )
+        assert budget == 6000

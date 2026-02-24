@@ -136,6 +136,7 @@ class PolicyDecision:
     greeting_name: str | None = None       # if set → personalise greeting
     retrieval_route: str = "llm_only"      # label for metadata
     rag_k: int = 4
+    rag_min_similarity: float = 0.0        # relevance floor for KB docs
     qa_k: int = 4
     qa_min_similarity: float = 0.65
 
@@ -183,12 +184,15 @@ class BehaviorPolicy:
             d.retrieval_route = "rag"
 
         elif intent == "continuation":
+            d.inject_rag = True
             d.inject_qa_history = True
+            d.rag_min_similarity = 0.35
             d.retrieval_route = "conversation"
 
         else:  # general
-            d.use_curated_history = False
-            d.retrieval_route = "llm_only"
+            d.inject_rag = True
+            d.rag_min_similarity = 0.45
+            d.retrieval_route = "adaptive"
 
         # ── Cross-intent overlays (always apply after base rules) ─────────
 

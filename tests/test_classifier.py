@@ -25,6 +25,7 @@ from llm.classifier import (
     VALID_INTENTS,
     PRIVACY_SIGNALS,
     CONTINUATION_PRONOUNS,
+    CONTINUATION_SIGNALS,
 )
 
 
@@ -202,3 +203,53 @@ class TestLLMFallback:
 def test_valid_intents_set():
     """Pipeline relies on exactly these 5 labels."""
     assert VALID_INTENTS == {"general", "continuation", "knowledge_base", "profile", "privacy"}
+
+
+# ─── Continuation signal fast-path ────────────────────────────────────────
+
+class TestContinuationSignalsFastPath:
+    """Short continuation signals with context should be fast-pathed."""
+
+    def _ctx(self):
+        return [
+            {"role": "user", "content": "Tell me about Python"},
+            {"role": "assistant", "content": "Python is a programming language..."},
+        ]
+
+    def test_why_question(self):
+        result = classify_intent("Why?", conversation_context=self._ctx())
+        assert result["intent"] == "continuation"
+        assert result["confidence"] >= 0.8
+
+    def test_elaborate(self):
+        result = classify_intent("Elaborate", conversation_context=self._ctx())
+        assert result["intent"] == "continuation"
+        assert result["confidence"] >= 0.8
+
+    def test_more_details(self):
+        result = classify_intent("More details", conversation_context=self._ctx())
+        assert result["intent"] == "continuation"
+        assert result["confidence"] >= 0.8
+
+    def test_longer_signal_falls_through(self):
+        """Longer messages with signals should NOT be fast-pathed."""
+        with patch("llm.classifier.completion") as mock_completion:
+            mock_completion.return_value = '{"intent":"continuation","confidence":0.8}'
+            classify_intent("I need more details about this", conversation_context=self._ctx())
+        mock_completion.assert_called_once()
+
+
+# ─── Profile opener protection ────────────────────────────────────────────
+
+class TestProfileOpenerProtection:
+    """Long messages with profile openers should fall through to the LLM."""
+
+    def test_long_opener_not_fast_pathed(self):
+        with patch("llm.classifier.completion") as mock_completion:
+            mock_completion.return_value = '{"intent":"knowledge_base","confidence":0.85}'
+            result = classify_intent(
+                "I have a really important question about machine learning transformers "
+                "and how they process attention mechanisms in parallel"
+            )
+        mock_completion.assert_called_once()
+        assert result["intent"] == "knowledge_base"

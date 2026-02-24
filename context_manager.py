@@ -43,6 +43,12 @@ _CHARS_PER_TOKEN: int = 4
 # Fixed per-message overhead: role string + JSON framing (~10 tokens).
 _MSG_OVERHEAD: int = 10
 
+# Prefix that identifies a summary message produced by this module.
+SUMMARY_PREFIX: str = "[Summary of earlier conversation]:"
+
+# Maximum tokens sent to the summarizer LLM as transcript.
+_MAX_SUMMARIZER_INPUT_TOKENS: int = 4000
+
 
 # --------------------------------------------------------------------------
 #  Token estimation
@@ -68,6 +74,37 @@ def history_tokens(messages: list[dict]) -> int:
 
 
 # --------------------------------------------------------------------------
+#  Dynamic budget computation
+# --------------------------------------------------------------------------
+
+def compute_history_budget(
+    context_window: int,
+    response_reserve: int,
+    preamble_tokens: int = 0,
+    min_budget: int = 1000,
+) -> int:
+    """Compute remaining token budget for conversation history.
+
+    Subtracts system prompts, RAG context, profile, and response reserve
+    from the total context window.  Returns at least ``min_budget`` so the
+    model always has some conversational context.
+
+    Args:
+        context_window:   Total model context window (e.g. 65536).
+        response_reserve: Tokens reserved for the model's output.
+        preamble_tokens:  Tokens already used by system prompts, RAG, profile, etc.
+        min_budget:       Floor — never return less than this.
+    """
+    remaining = context_window - preamble_tokens - response_reserve
+    budget = max(remaining, min_budget)
+    logger.debug(
+        "History budget: %d (window=%d, preamble=%d, reserve=%d, min=%d)",
+        budget, context_window, preamble_tokens, response_reserve, min_budget,
+    )
+    return budget
+
+
+# --------------------------------------------------------------------------
 #  Budget fitting
 # --------------------------------------------------------------------------
 
@@ -81,6 +118,8 @@ def fit_messages_to_budget(
     Always preserves the last ``min_recent`` messages regardless of budget,
     so the model always has some immediate conversational context.
 
+    Uses O(n) prefix-sum trimming instead of re-counting on each drop.
+
     Args:
         messages:      Chronological ``[{"role": ..., "content": ...}]`` list.
         budget_tokens: Maximum allowed token count for the history block.
@@ -93,38 +132,96 @@ def fit_messages_to_budget(
     if not messages:
         return messages
 
+    costs = [message_tokens(m) for m in messages]
+    total = sum(costs)
+
     # Fast path — already fits.
-    total = history_tokens(messages)
     if total <= budget_tokens:
         return messages
 
-    trimmed = list(messages)
-    while len(trimmed) > min_recent and history_tokens(trimmed) > budget_tokens:
-        trimmed.pop(0)
+    # Drop from the front until we fit or reach min_recent.
+    n = len(messages)
+    cut = 0
+    while cut < n - min_recent and total > budget_tokens:
+        total -= costs[cut]
+        cut += 1
 
-    dropped = len(messages) - len(trimmed)
-    logger.info(
-        "Context budget: dropped %d oldest messages to fit %d-token budget "
-        "(kept %d, ~%d tokens estimated)",
-        dropped,
-        budget_tokens,
-        len(trimmed),
-        history_tokens(trimmed),
-    )
+    trimmed = messages[cut:]
+    if cut > 0:
+        logger.info(
+            "Context budget: dropped %d oldest messages to fit %d-token budget "
+            "(kept %d, ~%d tokens)",
+            cut, budget_tokens, len(trimmed), total,
+        )
     return trimmed
 
 
 # --------------------------------------------------------------------------
-#  Summarization
+#  Progressive summarization
 # --------------------------------------------------------------------------
 
 _SUMMARIZE_SYSTEM = (
-    "You are a concise conversation summarizer. "
-    "Summarize the following conversation turns into 2-5 sentences. "
-    "Capture: the main topics discussed, any facts the user stated about themselves, "
-    "unresolved questions, and the user's apparent goal. "
-    "Output ONLY the summary — no preamble, no labels, no bullet points."
+    "You are a precise conversation summarizer. Given a conversation transcript "
+    "(which may include a prior summary of even earlier messages), produce a "
+    "cohesive summary that preserves:\n"
+    "1. Key topics discussed and any decisions made\n"
+    "2. Important facts the user shared about themselves (name, preferences, etc.)\n"
+    "3. Unresolved questions or pending tasks\n"
+    "4. The user's apparent goals and current focus\n"
+    "5. Key technical details, code specifics, or exact data mentioned\n\n"
+    "Write 3-8 sentences. Be factual and specific — include names, numbers, "
+    "and technical terms rather than vague references. Do NOT add labels, "
+    "bullet points, or meta-commentary."
 )
+
+
+def _is_summary_message(msg: dict) -> bool:
+    """Check whether a message is a summary produced by this module."""
+    return (
+        msg.get("role") == "system"
+        and msg.get("content", "").startswith(SUMMARY_PREFIX)
+    )
+
+
+def _build_transcript(
+    existing_summary: str | None,
+    overflow_messages: list[dict],
+) -> str:
+    """Build a token-budgeted transcript for the summarizer LLM.
+
+    If an existing summary exists, it is prepended as seed context so the
+    new summary progressively refines prior knowledge rather than starting
+    fresh each time.  Messages are included in full until the transcript
+    token budget is reached.
+    """
+    parts: list[str] = []
+    used_tokens = 0
+
+    # Include prior summary as seed context
+    if existing_summary:
+        seed = (
+            f"Prior summary of earlier turns:\n{existing_summary}"
+            f"\n\nNew messages to incorporate:"
+        )
+        seed_tokens = estimate_tokens(seed) + 10
+        parts.append(seed)
+        used_tokens += seed_tokens
+
+    # Add messages until we hit the transcript budget
+    for m in overflow_messages:
+        line = f"{m['role'].title()}: {m['content']}"
+        line_tokens = estimate_tokens(line)
+        if used_tokens + line_tokens > _MAX_SUMMARIZER_INPUT_TOKENS:
+            remaining_chars = max(
+                0, (_MAX_SUMMARIZER_INPUT_TOKENS - used_tokens) * _CHARS_PER_TOKEN
+            )
+            if remaining_chars > 50:
+                parts.append(f"{m['role'].title()}: {m['content'][:remaining_chars]}…")
+            break
+        parts.append(line)
+        used_tokens += line_tokens
+
+    return "\n".join(parts)
 
 
 def summarize_old_turns(
@@ -133,61 +230,71 @@ def summarize_old_turns(
     completion_fn: Callable[[list[dict]], str],
     min_recent: int = 6,
 ) -> list[dict]:
-    """Replace overflow turns with an LLM-generated summary.
+    """Progressive summarization — ChatGPT-style rolling context compression.
 
     If the history fits within *max_history_tokens*, returns it unchanged.
     Otherwise:
 
-    1. Splits messages into ``[overflow | tail(min_recent)]``.
-    2. Posts the overflow transcript to *completion_fn* for summarization.
-    3. Returns ``[summary_system_msg] + tail``.
+    1. Detects any existing summary message from a prior pass.
+    2. Splits remaining messages into ``[overflow | tail(min_recent)]``.
+    3. Builds a token-budgeted transcript (seeded with the prior summary).
+    4. Calls *completion_fn* to produce a new summary.
+    5. Returns ``[summary_system_msg] + tail``.
 
-    On summarization failure, falls back to ``fit_messages_to_budget``
-    (silent drop) so the pipeline always gets a valid message list.
+    Falls back to ``fit_messages_to_budget`` on any LLM error.
 
     Args:
         messages:           Chronological conversation messages.
         max_history_tokens: Token budget for the full history block.
-        completion_fn:      A callable with signature ``(messages) -> str``,
-                            typically ``llm.client.completion``.
+        completion_fn:      ``(messages) -> str`` callable.
         min_recent:         Recent turns to always keep verbatim.
-
-    Returns:
-        History list, possibly prefixed with a compacted summary message.
     """
     if not messages or history_tokens(messages) <= max_history_tokens:
         return messages
 
-    # Keep the freshest `min_recent` turns verbatim.
-    recent = messages[-min_recent:]
-    to_summarize = messages[:-min_recent]
+    # ── Extract existing summary (progressive chaining) ───────────────
+    existing_summary: str | None = None
+    non_summary: list[dict] = []
+    for m in messages:
+        if _is_summary_message(m):
+            existing_summary = m["content"][len(SUMMARY_PREFIX):].strip()
+        else:
+            non_summary.append(m)
 
-    if not to_summarize:
-        # Not enough messages to split — just trim.
+    # ── Split into overflow and recent ────────────────────────────────
+    if len(non_summary) <= min_recent:
         return fit_messages_to_budget(messages, max_history_tokens, min_recent)
 
-    transcript = "\n".join(
-        f"{m['role'].title()}: {m['content'][:400]}"
-        for m in to_summarize
-    )
+    recent = non_summary[-min_recent:]
+    overflow = non_summary[:-min_recent]
+
+    if not overflow and not existing_summary:
+        return fit_messages_to_budget(messages, max_history_tokens, min_recent)
+
+    # ── Build token-budgeted transcript ───────────────────────────────
+    transcript = _build_transcript(existing_summary, overflow)
 
     try:
-        summary_text = completion_fn(
-            [
-                {"role": "system", "content": _SUMMARIZE_SYSTEM},
-                {"role": "user", "content": transcript},
-            ]
-        )
+        summary_text = completion_fn([
+            {"role": "system", "content": _SUMMARIZE_SYSTEM},
+            {"role": "user", "content": transcript},
+        ])
         summary_msg: dict = {
             "role": "system",
-            "content": f"[Summary of earlier conversation]: {summary_text.strip()}",
+            "content": f"{SUMMARY_PREFIX} {summary_text.strip()}",
         }
+        result = [summary_msg] + list(recent)
+
         logger.info(
-            "Context: compressed %d turns into ~%d-token summary",
-            len(to_summarize),
+            "Context: compressed %d turns%s into ~%d-token summary "
+            "(kept %d recent, ~%d tokens total)",
+            len(overflow),
+            " + prior summary" if existing_summary else "",
             estimate_tokens(summary_text),
+            len(recent),
+            history_tokens(result),
         )
-        return [summary_msg] + list(recent)
+        return result
 
     except Exception as exc:
         logger.warning("Summarization failed (%s) — falling back to recency trim", exc)

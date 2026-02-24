@@ -885,8 +885,12 @@ def store_document_chunks(chunks: list[str], source: str = "default") -> int:
             put_connection(conn)
 
 
-def search_document_chunks(embedding, k: int = 4) -> list[str]:
-    """Semantic search over document chunks.  Returns chunk content strings."""
+def search_document_chunks(embedding, k: int = 4, min_similarity: float = 0.0) -> list[str]:
+    """Semantic search over document chunks.  Returns chunk content strings.
+
+    Results below *min_similarity* cosine similarity are excluded, so callers
+    can suppress irrelevant matches when the intent is uncertain.
+    """
     conn = None
     try:
         conn = get_connection()
@@ -900,7 +904,7 @@ def search_document_chunks(embedding, k: int = 4) -> list[str]:
         """, (emb, emb, k))
         results = cur.fetchall()
         cur.close()
-        return [r[0] for r in results]
+        return [r[0] for r in results if r[1] >= min_similarity]
     except Exception as e:
         logger.error(f"Error searching document chunks: {e}")
         return []

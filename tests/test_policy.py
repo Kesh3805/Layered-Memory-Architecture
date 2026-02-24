@@ -39,13 +39,14 @@ def features(**kwargs) -> ContextFeatures:
 # ─── Intent: general ──────────────────────────────────────────────────────
 
 class TestGeneralIntent:
-    def test_no_injections(self):
+    def test_adaptive_rag_for_general(self):
         d = POLICY.resolve(features(), "general")
         assert not d.inject_profile
-        assert not d.inject_rag
+        assert d.inject_rag
         assert not d.inject_qa_history
-        assert d.retrieval_route == "llm_only"
-        assert not d.use_curated_history
+        assert d.retrieval_route == "adaptive"
+        assert d.use_curated_history
+        assert d.rag_min_similarity >= 0.4
 
     def test_name_overlay_without_profile_data(self):
         """Name in profile but inject_profile stays False → lightweight greeting_name used."""
@@ -89,11 +90,12 @@ class TestContinuationIntent:
         d = POLICY.resolve(features(is_followup=True), "continuation")
         assert d.inject_qa_history
         assert d.retrieval_route == "conversation"
-        assert not d.inject_rag
+        assert d.inject_rag
 
-    def test_no_inject_rag(self):
+    def test_rag_injected_for_continuation(self):
         d = POLICY.resolve(features(), "continuation")
-        assert not d.inject_rag
+        assert d.inject_rag
+        assert d.rag_min_similarity > 0
 
 
 # ─── Intent: profile ──────────────────────────────────────────────────────

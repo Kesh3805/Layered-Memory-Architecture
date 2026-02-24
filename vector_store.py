@@ -49,8 +49,12 @@ def add_documents(text_chunks: list[str], source: str = "default") -> int:
     return len(text_chunks)
 
 
-def search(query: str, k: Optional[int] = None) -> list[str]:
-    """Semantic search over indexed documents.  Returns chunk texts."""
+def search(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> list[str]:
+    """Semantic search over indexed documents.  Returns chunk texts.
+
+    Results below *min_similarity* are excluded to prevent irrelevant
+    context from being injected when the user's intent is ambiguous.
+    """
     if k is None:
         from settings import settings
         k = settings.RETRIEVAL_K
@@ -59,7 +63,7 @@ def search(query: str, k: Optional[int] = None) -> list[str]:
         import query_db
         from embeddings import get_query_embedding
         embedding = get_query_embedding(query)
-        return query_db.search_document_chunks(embedding, k=k)
+        return query_db.search_document_chunks(embedding, k=k, min_similarity=min_similarity)
     else:
         from embeddings import get_query_embedding
         if not _fallback_docs:
@@ -71,7 +75,7 @@ def search(query: str, k: Optional[int] = None) -> list[str]:
             norm = float(np.linalg.norm(qe) * np.linalg.norm(emb))
             sims.append(dot / norm if norm > 0 else 0.0)
         topk = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
-        return [_fallback_docs[i] for i in topk]
+        return [_fallback_docs[i] for i in topk if sims[i] >= min_similarity]
 
 
 def has_documents() -> bool:
