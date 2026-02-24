@@ -162,3 +162,62 @@ def test_frame_order_system_greeting_profile_rag_qa_history_user():
 
     assert max(system_indices) < min(history_indices)
     assert max(history_indices) < user_index
+
+
+# ─── Behavior frame tests ─────────────────────────────────────────────────
+
+def test_behavior_frame_injected_when_context_provided():
+    """Behavior state frame appears when behavior_context is set."""
+    msgs = build_messages(QUERY, behavior_context="User is frustrated.")
+    contents = [m["content"] for m in msgs if m["role"] == "system"]
+    assert any("User is frustrated." in c for c in contents)
+
+
+def test_behavior_frame_not_injected_when_empty():
+    """No behavior frame when all behavior params are defaults."""
+    msgs = build_messages(QUERY)
+    # Should be only SYSTEM_PROMPT + user query
+    assert len(msgs) == 2
+
+
+def test_behavior_frame_between_greeting_and_profile():
+    """Behavior frame should appear after greeting but before profile."""
+    msgs = build_messages(
+        QUERY,
+        greeting_name="Alice",
+        behavior_context="User is curious.",
+        profile_context="Name: Alice",
+    )
+    greeting_idx = next(
+        i for i, m in enumerate(msgs) if m["role"] == "system" and "Alice" in m["content"] and "Name:" not in m["content"]
+    )
+    behavior_idx = next(
+        i for i, m in enumerate(msgs) if m["role"] == "system" and "curious" in m["content"]
+    )
+    profile_idx = next(
+        i for i, m in enumerate(msgs) if m["role"] == "system" and "Name:" in m["content"]
+    )
+    assert greeting_idx < behavior_idx < profile_idx
+
+
+def test_personality_mode_injected():
+    """Personality mode text appears in behavior frame."""
+    msgs = build_messages(QUERY, behavior_context="Testing.", personality_mode="concise")
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    # The concise personality frame should be included
+    assert "concise" in contents.lower() or "brief" in contents.lower() or "shorter" in contents.lower()
+
+
+def test_meta_instruction_injected():
+    """Meta instruction appears in behavior frame."""
+    msgs = build_messages(QUERY, behavior_context="State info.", meta_instruction="Acknowledge repetition.")
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    assert "Acknowledge repetition." in contents
+
+
+def test_response_length_hint_injected():
+    """Response length hint text appears in behavior frame."""
+    msgs = build_messages(QUERY, behavior_context="Info.", response_length_hint="brief")
+    contents = " ".join(m["content"] for m in msgs if m["role"] == "system")
+    # Should contain the brief length hint
+    assert "brief" in contents.lower() or "short" in contents.lower() or "sentence" in contents.lower()

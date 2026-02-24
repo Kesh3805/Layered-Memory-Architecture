@@ -1,6 +1,6 @@
 # Backend Implementation Documentation
 
-> **Version 4.1.0** — Policy-driven, intent-gated RAG chat framework
+> **Version 5.0.0** — Behavior-aware policy-driven intent-gated RAG chat framework
 
 ---
 
@@ -20,6 +20,8 @@
    - [cache.py — Optional Redis](#cachepy--optional-redis)
    - [worker.py — Background Tasks](#workerpy--background-tasks)
    - [cli.py — Command Line Interface](#clipy--command-line-interface)
+   - [conversation_state.py — Conversational State](#conversation_statepy--conversational-state)
+   - [behavior_engine.py — Behavioral Routing](#behavior_enginepy--behavioral-routing)
    - [llm/ Package](#llm-package)
 3. [Pipeline Deep Dive](#pipeline-deep-dive)
 4. [API Reference](#api-reference)
@@ -36,8 +38,10 @@
 Chatapp/
 ├── backend/                        # All Python server code
 │   ├── __init__.py                 # Package marker
-│   ├── main.py                     # FastAPI app + 12-step pipeline + all endpoints (671 lines)
-│   ├── settings.py                 # Centralized env-driven config (~40 settings)
+│   ├── main.py                     # FastAPI app + pipeline + all endpoints (~770 lines)
+│   ├── settings.py                 # Centralized env-driven config (~45 settings)
+│   ├── conversation_state.py       # Per-conversation behavioral state tracking
+│   ├── behavior_engine.py          # Behavioral routing layer (8 modes)
 │   ├── policy.py                   # BehaviorPolicy engine (deterministic rules)
 │   ├── context_manager.py          # Token budgeting, history fitting, progressive summarization
 │   ├── query_db.py                 # PostgreSQL + pgvector persistence (1012 lines, 31 functions)
@@ -63,15 +67,17 @@ Chatapp/
 │   │       ├── cerebras.py         # Cerebras Cloud SDK
 │   │       ├── openai.py           # OpenAI (also Azure, vLLM, Ollama via base_url)
 │   │       └── anthropic.py        # Anthropic Messages API
-│   └── tests/                      # 126 unit tests
+│   └── tests/                      # 190+ unit tests
 │       ├── conftest.py             # sys.path setup for flat imports
 │       ├── __init__.py
 │       ├── test_chunker.py         # 27 tests — chunk_text edge cases
 │       ├── test_classifier.py      # Intent classification with mocked LLM
 │       ├── test_context_manager.py # Token budgeting + summarization
 │       ├── test_policy.py          # BehaviorPolicy rule coverage
-│       ├── test_prompt_orchestrator.py # Message assembly verification
-│       └── test_settings.py        # Config defaults + env overrides
+│       ├── test_prompt_orchestrator.py # Message assembly + behavior frame verification
+│       ├── test_settings.py        # Config defaults + env overrides
+│       ├── test_conversation_state.py # Conversation state tracking (30 tests)
+│       └── test_behavior_engine.py # Behavioral routing engine (24 tests)
 ├── frontend/                       # React 18 + Vite + Tailwind + AI SDK
 │   └── src/
 │       ├── components/ai/          # AI-native observability primitives
@@ -93,7 +99,7 @@ Chatapp/
 
 ### main.py — Application & Pipeline
 
-**Purpose:** FastAPI application, the 12-step shared pipeline, all HTTP endpoints, and the UI serve layer.
+**Purpose:** FastAPI application, the behavior-aware pipeline, all HTTP endpoints, and the UI serve layer.
 
 **Key components:**
 
@@ -106,7 +112,7 @@ Chatapp/
 | `ProfileEntryRequest` | Pydantic model: `key`, `value`, `category`, `user_id` |
 | `RegenerateRequest` | Pydantic model: `conversation_id`, `user_id` |
 | `PipelineResult` | Dataclass holding all pipeline outputs for generation |
-| `run_pipeline(request)` | The shared 12-step pipeline — returns `PipelineResult` |
+| `run_pipeline(request)` | The shared pipeline — returns `PipelineResult` |
 | `persist_after_response(p, response)` | Background persistence: save messages, detect profile, update topic vector, auto-title |
 | `_ingest_knowledge()` | Reads `knowledge/` directory, chunks files, indexes into vector store |
 
@@ -118,7 +124,8 @@ Chatapp/
 | 2 | Load history + profile from PostgreSQL (parallel with step 1 using `ThreadPoolExecutor(3)`) |
 | 3 | Classify intent (pre-heuristics → LLM fallback → cache) |
 | 4 | Topic gate: cosine similarity check for `continuation` — demotes to `general` if topic drift detected |
-| 5 | Extract `ContextFeatures` + `BehaviorPolicy.resolve()` + `Hooks.run_policy_override()` |
+| 4b | Behavior engine: load/update conversational state, run behavioral routing (8 modes) |
+| 5 | Extract `ContextFeatures` + `BehaviorPolicy.resolve()` + behavior overrides + `Hooks.run_policy_override()` |
 | 6 | History pruning: recency window + semantic retrieval of relevant older Q&A |
 | 7 | Selective context assembly: only inject what `PolicyDecision` flags say to inject |
 | 8 | `Hooks.run_before_generation()` |
@@ -154,6 +161,7 @@ Chatapp/
 | **Database** | `DATABASE_URL`, `POSTGRES_*`, `DB_POOL_MIN`, `DB_POOL_MAX` | `""`, default creds, 2, 10 |
 | **Cache** | `ENABLE_CACHE`, `REDIS_URL`, `CACHE_TTL` | False, `redis://localhost:6379/0`, 3600 |
 | **Pipeline** | `DEFAULT_USER_ID`, `HISTORY_FETCH_LIMIT`, `ENABLE_HISTORY_SUMMARIZATION` | `default`, 50, True |
+| **Behavior Engine** | `BEHAVIOR_ENGINE_ENABLED`, `BEHAVIOR_REPETITION_THRESHOLD`, `BEHAVIOR_PATTERN_WINDOW`, `BEHAVIOR_STATE_PERSIST` | True, 0.7, 10, True |
 
 ---
 
@@ -428,6 +436,75 @@ def force_rag_for_questions(features, decision):
 
 ---
 
+### conversation_state.py — Conversational State
+
+**Purpose:** The "C tier" memory layer — per-conversation behavioral state tracking. Complements episodic memory (user_queries) and semantic memory (user_profile) with a meta-conversational layer that tracks *how* the user interacts, not *what* they said.
+
+**Memory tiers:**
+| Tier | Module | What it stores |
+|---|---|---|
+| A) Episodic | user_queries table | Facts extracted from queries |
+| B) Semantic | user_profile table | User traits and preferences |
+| C) Conversational | conversation_state | Behavioral patterns per conversation |
+
+**`ConversationState` dataclass** (19 fields):
+- **Topic:** `current_topic`, `topic_turns_stable`, `topic_drift_count`
+- **Tone:** `emotional_tone` (neutral/positive/frustrated/curious/playful), `tone_shift_count`
+- **Behavior:** `interaction_pattern`, `testing_flag`, `repetition_count`, `meta_comment_count`
+- **Intent history:** `last_intent`, `intent_history` (deque), `intent_streak`
+- **Stats:** `message_count`, `avg_query_length`, `short_query_streak`
+- **Personality:** `dynamic_personality_mode`
+- **Timing:** `last_update`, `conversation_start`
+
+**`StateTracker.update()`** — Stateless analyzer that detects:
+1. Emotional tone (positive/frustrated/curious/playful signals)
+2. Repetition (Jaccard word-overlap ≥ 0.7 threshold)
+3. Testing/adversarial behavior (jailbreak, ignore instructions, etc.)
+4. Meta-commentary ("you already said", "that's not helpful", etc.)
+5. Interaction pattern (rapid_fire/exploratory/deep_dive/standard)
+6. Dynamic personality mode based on accumulated signals
+
+**In-memory cache:** `_state_cache` with LRU eviction at 200 entries. DB persistence handled by `query_db.save_conversation_state()`.
+
+**Public API:**
+| Function | Purpose |
+|---|---|
+| `get_or_create_state(cid)` | Cache lookup or create fresh state |
+| `set_state(cid, state)` | Store/update state in cache |
+| `clear_state(cid)` | Remove from cache (on conversation delete) |
+
+---
+
+### behavior_engine.py — Behavioral Routing
+
+**Purpose:** Sits between intent classification and retrieval — modulates *how* the pipeline responds based on conversational state. This is what makes the difference between a search engine and a conversational partner.
+
+**`BehaviorDecision` dataclass** — output of the engine:
+| Field | Description |
+|---|---|
+| `behavior_mode` | One of 8 modes: standard, greeting, repetition_aware, testing_aware, meta_aware, frustration_recovery, rapid_fire, exploratory |
+| `skip_retrieval` | Skip RAG/QA entirely (greetings, meta-comments) |
+| `reduce_retrieval` / `boost_retrieval` | Modulate retrieval depth |
+| `rag_k_override` / `rag_min_similarity_override` | Override policy's retrieval params |
+| `personality_mode` | Override: default, concise, detailed, playful, empathetic |
+| `response_length_hint` | Override: brief, normal, detailed |
+| `behavior_context` | Text injected into BEHAVIOR_STATE_FRAME |
+| `meta_instruction` | Specific behavioral instruction for LLM |
+| `triggers` | List of detected trigger labels |
+
+**`BehaviorEngine.evaluate()`** — Priority-ordered detection:
+1. **Frustration recovery** → empathetic personality, boost retrieval
+2. **Testing/adversarial** → concise personality, skip retrieval
+3. **Meta-commentary** → acknowledge, skip retrieval
+4. **Repetition** → rephrase, reduce retrieval
+5. **Greeting** → playful personality, skip retrieval
+6. **Rapid-fire** → concise personality, reduce retrieval
+7. **Exploratory** → detailed personality, boost retrieval
+8. **Tone overlays** → personality adjustments based on emotional tone
+9. **Standard** → no overrides
+
+---
+
 ### llm/ Package
 
 #### llm/client.py — Provider Wrapper
@@ -464,7 +541,7 @@ Re-exports token budgets: `MAX_RESPONSE_TOKENS`, `MAX_CLASSIFIER_TOKENS`, `MAX_P
 | `generate_response_stream(...)` | Streaming — yields Vercel AI SDK data-stream lines (`0:"text"\n`) |
 | `generate_title(user_message)` | 3-6 word title from first message, word-boundary truncation at 50 chars |
 
-Both generation functions accept the same parameters: `user_query`, `chat_history`, `rag_context`, `profile_context`, `similar_qa_context`, `curated_history`, `privacy_mode`, `greeting_name`.
+Both generation functions accept the same parameters: `user_query`, `chat_history`, `rag_context`, `profile_context`, `similar_qa_context`, `curated_history`, `privacy_mode`, `greeting_name`, `behavior_context`, `meta_instruction`, `personality_mode`, `response_length_hint`.
 
 **Streaming protocol:**
 ```
@@ -489,6 +566,9 @@ d:{"finishReason":"stop"}              ← done signal
 | `GREETING_PERSONALIZATION_FRAME` | Instructions for personalized greeting with user's name |
 | `PROFILE_DETECT_PROMPT` | Instructions for extracting personal facts from messages |
 | `TITLE_PROMPT` | Instructions for generating 3-6 word conversation titles |
+| `BEHAVIOR_STATE_FRAME` | Behavioral intelligence context frame (tone, patterns, meta-instruction) |
+| `PERSONALITY_FRAMES` | Dict of 5 personality modes (default, concise, detailed, playful, empathetic) |
+| `RESPONSE_LENGTH_HINTS` | Dict of 3 response length hints (brief, normal, detailed) |
 
 #### llm/prompt_orchestrator.py — Message Assembly
 
@@ -497,11 +577,12 @@ d:{"finishReason":"stop"}              ← done signal
 **Message ordering:**
 1. System prompt (always first)
 2. Greeting personalization frame (if `greeting_name` set)
-3. Profile context frame (if `profile_context` provided)
-4. RAG context frame (if `rag_context` provided)
-5. Privacy frame OR Q&A context frame (mutually exclusive)
-6. Conversation history (budget-enforced, optionally summarized)
-7. Current user message (always last)
+3. Behavior state frame (if `behavior_context` or `meta_instruction` present — includes personality + length hint)
+4. Profile context frame (if `profile_context` provided)
+5. RAG context frame (if `rag_context` provided)
+6. Privacy frame OR Q&A context frame (mutually exclusive)
+7. Conversation history (budget-enforced, optionally summarized)
+8. Current user message (always last)
 
 **Token budgeting:**
 - Computes preamble tokens (all system messages + user query)
@@ -571,7 +652,13 @@ User message arrives
      cosine_sim(query_embedding, topic_vector) < 0.35? → demote to "general"
        │
        ▼
-  6. Extract ContextFeatures + BehaviorPolicy.resolve() + Hooks.policy_override()
+  5b. Behavior engine
+     ├── Load/create conversation state (cache + DB fallback)
+     ├── Update state: tone, repetition, testing, meta, pattern
+     └── Evaluate: 8 priority-ordered modes → BehaviorDecision
+       │
+       ▼
+  6. Extract ContextFeatures + BehaviorPolicy.resolve() + behavior overrides + Hooks.policy_override()
        │
        ▼
   7. History pruning
@@ -635,8 +722,9 @@ Response:
   "conversation_id": "uuid",
   "intent": "knowledge_base",
   "confidence": 0.92,
-  "retrieval_info": {"num_docs": 4, "similar_queries": 2},
-  "query_tags": ["rag", "ai"]
+  "retrieval_info": {"num_docs": 4, "similar_queries": 2, "behavior_mode": "standard", "behavior_triggers": ["standard"]},
+  "query_tags": ["rag", "ai"],
+  "behavior_mode": "standard"
 }
 ```
 
@@ -670,6 +758,7 @@ d:{"finishReason":"stop"}
 | `POST` | `/conversations` | Create new conversation |
 | `GET` | `/conversations/{id}` | Get conversation messages |
 | `GET` | `/conversations/{id}/export?format=json` | Export conversation (JSON or text) |
+| `GET` | `/conversations/{id}/state` | Inspect behavioral state (debug) |
 | `PUT` | `/conversations/{id}` | Rename conversation |
 | `DELETE` | `/conversations/{id}` | Delete conversation |
 
@@ -748,6 +837,13 @@ CREATE TABLE document_chunks (
 CREATE INDEX ON user_queries USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON conversations USING hnsw (topic_embedding vector_cosine_ops);
+
+-- Behavioral intelligence state (per-conversation)
+CREATE TABLE conversation_state (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    state_data      JSONB NOT NULL DEFAULT '{}',
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ---
@@ -807,6 +903,12 @@ DEFAULT_USER_ID=default
 HISTORY_FETCH_LIMIT=50
 ENABLE_HISTORY_SUMMARIZATION=true
 
+# ── Behavior Engine ───────────────────────────────────────
+BEHAVIOR_ENGINE_ENABLED=true             # Enable behavioral intelligence layer
+BEHAVIOR_REPETITION_THRESHOLD=0.7        # Jaccard word-overlap threshold
+BEHAVIOR_PATTERN_WINDOW=10               # Messages to consider for pattern detection
+BEHAVIOR_STATE_PERSIST=true              # Persist state to DB (vs in-memory only)
+
 # ── Server ────────────────────────────────────────────────
 HOST=0.0.0.0
 PORT=8000
@@ -817,7 +919,7 @@ ALLOWED_ORIGINS=*
 
 ## Test Suite
 
-**126 tests** across 6 test files in `backend/tests/`:
+**190+ tests** across 8 test files in `backend/tests/`:
 
 | File | Tests | Coverage |
 |---|---|---|
@@ -825,8 +927,10 @@ ALLOWED_ORIGINS=*
 | `test_classifier.py` | ~25 | Pre-heuristic paths (greeting, profile, privacy, continuation), LLM fallback, cache hit, unknown intents |
 | `test_context_manager.py` | ~20 | Token estimation, budget fitting, progressive summarization, edge cases |
 | `test_policy.py` | ~30 | All 5 intents, cross-intent overlays, greeting detection, personal ref signals, feature extraction |
-| `test_prompt_orchestrator.py` | ~16 | Message ordering, frame injection, privacy suppression, history fallback, token budgeting |
-| `test_settings.py` | ~8 | Defaults, env overrides, bool parsing, immutability |
+| `test_prompt_orchestrator.py` | ~22 | Message ordering, frame injection, behavior frame position, personality modes, privacy suppression, history fallback |
+| `test_settings.py` | ~12 | Defaults, env overrides, bool parsing, immutability, behavior engine settings |
+| `test_conversation_state.py` | 30 | State tracking: tone detection, repetition, testing, meta, patterns, cache, serialization |
+| `test_behavior_engine.py` | 24 | All 8 behavior modes, priority ordering, retrieval modulation, personality overrides |
 
 **Running tests:**
 ```bash

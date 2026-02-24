@@ -1,4 +1,4 @@
-"""FastAPI application — policy-driven intent-gated selective retrieval.
+"""FastAPI application — behavior-aware policy-driven intent-gated selective retrieval.
 
 Architecture layers:
   1. Settings       (settings.py)  — centralized configuration
@@ -8,17 +8,20 @@ Architecture layers:
   5. Pipeline       (this file)    — orchestrates retrieval + generation
   6. Database       (query_db.py)  — persistence + vector search (pgvector)
   7. Vector Store   (vector_store.py) — pgvector-backed document index
+  8. State Tracker  (conversation_state.py) — per-conversation behavioral state
+  9. Behavior Engine(behavior_engine.py)    — behavioral routing layer
 
 Pipeline (shared by /chat and /chat/stream):
   1. Embed query
   2. Load state     (history + profile entries)
   3. Classify intent
   4. Topic gate     (prevents false continuation across domain jumps)
-  5. Extract features + policy resolve + hooks
+  4b. Behavior engine (state tracking + behavioral routing)
+  5. Extract features + policy resolve + behavior overrides + hooks
   6. History pruning
-  7. Selective retrieval  (driven by policy decision)
-  8. Generate response
-  9. Persist         (DB writes via worker)
+  7. Selective retrieval  (driven by policy decision, modulated by behavior)
+  8. Generate response    (with behavior-aware prompt framing)
+  9. Persist         (DB writes + state persistence via worker)
 """
 
 from __future__ import annotations
@@ -50,6 +53,10 @@ from llm.generators import generate_response, generate_response_stream, generate
 from llm.profile_detector import detect_profile_updates
 from policy import BehaviorPolicy, extract_context_features
 from settings import settings
+from conversation_state import (
+    ConversationState, StateTracker, get_or_create_state, set_state, clear_state,
+)
+from behavior_engine import BehaviorEngine, BehaviorDecision
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -85,7 +92,7 @@ async def lifespan(app: FastAPI):  # noqa: D401
 # ---------------------------------------------------------------------------
 #  App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="RAG Chat", version="4.1.0", lifespan=lifespan)
+app = FastAPI(title="RAG Chat", version="5.0.0", lifespan=lifespan)
 _raw_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 _allowed_origins = _raw_origins if _raw_origins else ["*"]
 app.add_middleware(
@@ -175,6 +182,12 @@ class PipelineResult:
     query_tags: list = field(default_factory=list)
     privacy_mode: bool = False
     greeting_name: Optional[str] = None
+    # ── Behavior engine outputs ───────────────────────────────────
+    behavior_mode: str = "standard"
+    behavior_context: str = ""
+    meta_instruction: str = ""
+    personality_mode: str = "default"
+    response_length_hint: str = "normal"
 
 
 def _profile_entries_to_text(entries: list[dict]) -> str:
@@ -228,6 +241,42 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                 logger.info(f"Topic gate: {topic_similarity:.3f} < threshold → general")
                 intent, confidence = "general", 0.7
 
+    # Step 4b: Behavior engine — conversational state + behavioral routing
+    behavior_decision = BehaviorDecision()  # default: standard mode
+    if settings.BEHAVIOR_ENGINE_ENABLED:
+        # Load / create conversation state
+        conv_state = get_or_create_state(cid)
+        # Try to load from DB if state is fresh (message_count == 0) and DB has data
+        if DB_ENABLED and conv_state.message_count == 0:
+            saved = query_db.get_conversation_state(cid)
+            if saved:
+                conv_state = ConversationState.from_dict(saved)
+                set_state(cid, conv_state)
+
+        # Extract recent user queries for repetition detection
+        recent_user_queries = [
+            m["content"] for m in recent_messages if m.get("role") == "user"
+        ][-5:]
+
+        # Update state with current message
+        StateTracker.update(
+            state=conv_state,
+            query=query,
+            intent=intent,
+            confidence=confidence,
+            recent_queries=recent_user_queries,
+        )
+        set_state(cid, conv_state)
+
+        # Run behavior engine
+        behavior_decision = BehaviorEngine.evaluate(conv_state, query, intent, confidence)
+        logger.info(
+            f"Behavior: mode={behavior_decision.behavior_mode}, "
+            f"personality={behavior_decision.personality_mode}, "
+            f"triggers={behavior_decision.triggers}, "
+            f"skip_retrieval={behavior_decision.skip_retrieval}"
+        )
+
     # Step 5: Context features + policy resolve
     features = extract_context_features(
         query=query,
@@ -238,6 +287,24 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     )
     decision = BehaviorPolicy().resolve(features, intent)
     decision = Hooks.run_policy_override(features, decision)
+
+    # Step 5b: Apply behavior decision to policy overrides
+    if settings.BEHAVIOR_ENGINE_ENABLED:
+        if behavior_decision.skip_retrieval:
+            decision.inject_rag = False
+            decision.inject_qa_history = False
+            decision.retrieval_route = f"behavior:{behavior_decision.behavior_mode}"
+        elif behavior_decision.reduce_retrieval:
+            if behavior_decision.rag_k_override is not None:
+                decision.rag_k = behavior_decision.rag_k_override
+            if behavior_decision.rag_min_similarity_override is not None:
+                decision.rag_min_similarity = behavior_decision.rag_min_similarity_override
+        elif behavior_decision.boost_retrieval:
+            if behavior_decision.rag_k_override is not None:
+                decision.rag_k = behavior_decision.rag_k_override
+            if behavior_decision.rag_min_similarity_override is not None:
+                decision.rag_min_similarity = behavior_decision.rag_min_similarity_override
+
     logger.info(
         f"Policy: route={decision.retrieval_route}, profile={decision.inject_profile}, "
         f"rag={decision.inject_rag}, qa={decision.inject_qa_history}, "
@@ -312,6 +379,13 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     if decision.greeting_name:
         retrieval_info["greeting_personalized"] = True
 
+    # Inject behavior engine metadata into retrieval_info for observability
+    if settings.BEHAVIOR_ENGINE_ENABLED:
+        retrieval_info["behavior_mode"] = behavior_decision.behavior_mode
+        retrieval_info["behavior_triggers"] = behavior_decision.triggers
+        retrieval_info["personality_mode"] = behavior_decision.personality_mode
+        retrieval_info["response_length_hint"] = behavior_decision.response_length_hint
+
     return Hooks.run_before_generation(PipelineResult(
         query=query,
         cid=cid,
@@ -328,6 +402,11 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         query_tags=query_tags,
         privacy_mode=decision.privacy_mode,
         greeting_name=decision.greeting_name,
+        behavior_mode=behavior_decision.behavior_mode,
+        behavior_context=behavior_decision.behavior_context,
+        meta_instruction=behavior_decision.meta_instruction,
+        personality_mode=behavior_decision.personality_mode,
+        response_length_hint=behavior_decision.response_length_hint,
     ))
 
 
@@ -382,6 +461,12 @@ def persist_after_response(p: PipelineResult, response_text: str):
                     category=entry.get("category", "general"),
                     user_id=p.user_id,
                 )
+
+            # Persist conversation state for behavioral intelligence
+            if settings.BEHAVIOR_ENGINE_ENABLED and settings.BEHAVIOR_STATE_PERSIST:
+                from conversation_state import get_or_create_state as _get_state
+                conv_st = _get_state(p.cid)
+                query_db.save_conversation_state(p.cid, conv_st.to_dict())
         except Exception as e:
             logger.error(f"Persist error: {e}")
 
@@ -455,6 +540,8 @@ def delete_conversation(conversation_id: str):
     ok = query_db.delete_conversation(conversation_id)
     if not ok:
         raise HTTPException(404, "Conversation not found")
+    # Clear in-memory behavior state cache (DB row cascades automatically)
+    clear_state(conversation_id)
     return {"deleted": True}
 
 
@@ -467,6 +554,18 @@ def export_conversation(conversation_id: str):
     if not data:
         raise HTTPException(404, "Conversation not found")
     return data
+
+
+@app.get("/conversations/{conversation_id}/state")
+def get_conversation_state(conversation_id: str):
+    """Inspect behavioral state for a conversation (debug endpoint)."""
+    from conversation_state import get_or_create_state as _get_state
+    state = _get_state(conversation_id)
+    return {
+        "conversation_id": conversation_id,
+        "state": state.to_dict(),
+        "behavior_engine_enabled": settings.BEHAVIOR_ENGINE_ENABLED,
+    }
 
 
 @app.post("/chat/regenerate")
@@ -548,6 +647,10 @@ def chat(request: ChatRequest):
             curated_history=p.curated_history,
             privacy_mode=p.privacy_mode,
             greeting_name=p.greeting_name,
+            behavior_context=p.behavior_context,
+            meta_instruction=p.meta_instruction,
+            personality_mode=p.personality_mode,
+            response_length_hint=p.response_length_hint,
         )
     except Exception as e:
         logger.error(f"Generation error: {e}")
@@ -562,6 +665,7 @@ def chat(request: ChatRequest):
         "confidence": round(p.confidence, 2),
         "retrieval_info": p.retrieval_info,
         "query_tags": p.query_tags,
+        "behavior_mode": p.behavior_mode,
     }
 
 
@@ -602,6 +706,10 @@ def chat_stream(request: ChatRequest):
             curated_history=p.curated_history,
             privacy_mode=p.privacy_mode,
             greeting_name=p.greeting_name,
+            behavior_context=p.behavior_context,
+            meta_instruction=p.meta_instruction,
+            personality_mode=p.personality_mode,
+            response_length_hint=p.response_length_hint,
         ):
             if chunk.startswith("0:"):
                 try:
@@ -616,6 +724,7 @@ def chat_stream(request: ChatRequest):
             "confidence": round(p.confidence, 2),
             "retrieval_info": p.retrieval_info,
             "query_tags": p.query_tags,
+            "behavior_mode": p.behavior_mode,
         }
         yield f"8:{json.dumps([meta])}\n"
 

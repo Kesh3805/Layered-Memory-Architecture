@@ -24,6 +24,9 @@ from .prompts import (
     QA_CONTEXT_FRAME,
     PRIVACY_QA_FRAME,
     GREETING_PERSONALIZATION_FRAME,
+    BEHAVIOR_STATE_FRAME,
+    PERSONALITY_FRAMES,
+    RESPONSE_LENGTH_HINTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,10 @@ def build_messages(
     similar_qa_context: str = "",
     privacy_mode: bool = False,
     greeting_name: str | None = None,
+    behavior_context: str = "",
+    meta_instruction: str = "",
+    personality_mode: str = "default",
+    response_length_hint: str = "normal",
 ) -> list[dict]:
     """Assemble the OpenAI-format message list for the LLM.
 
@@ -60,6 +67,14 @@ def build_messages(
         Whether the privacy response frame should be injected.
     greeting_name : str | None
         If set, inject the greeting personalization frame.
+    behavior_context : str
+        Behavioral intelligence context (tone, patterns, mode).
+    meta_instruction : str
+        Specific behavioral instruction override.
+    personality_mode : str
+        Personality mode: default | concise | detailed | playful | empathetic.
+    response_length_hint : str
+        Suggested response length: brief | normal | detailed.
     """
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -68,6 +83,25 @@ def build_messages(
         messages.append({
             "role": "system",
             "content": GREETING_PERSONALIZATION_FRAME.format(name=greeting_name),
+        })
+
+    # ── Behavior state frame (conversational intelligence) ────────────────
+    _behavior_parts = []
+    if behavior_context:
+        _behavior_parts.append(behavior_context)
+    _personality_text = PERSONALITY_FRAMES.get(personality_mode, "")
+    if _personality_text:
+        _behavior_parts.append(_personality_text)
+    _length_text = RESPONSE_LENGTH_HINTS.get(response_length_hint, "")
+    if _length_text:
+        _behavior_parts.append(_length_text)
+    if _behavior_parts or meta_instruction:
+        messages.append({
+            "role": "system",
+            "content": BEHAVIOR_STATE_FRAME.format(
+                behavior_context="\n".join(_behavior_parts),
+                meta_instruction=meta_instruction,
+            ).strip(),
         })
 
     # ── Profile context ───────────────────────────────────────────────────
@@ -127,12 +161,13 @@ def build_messages(
     messages.append({"role": "user", "content": user_query})
 
     logger.info(
-        "Messages: %d total (rag=%s, profile=%s, qa=%s, privacy=%s, greeting=%s)",
+        "Messages: %d total (rag=%s, profile=%s, qa=%s, privacy=%s, greeting=%s, behavior=%s)",
         len(messages),
         "yes" if rag_context else "no",
         "yes" if profile_context else "no",
         "yes" if similar_qa_context else "no",
         "yes" if privacy_mode else "no",
         greeting_name or "no",
+        personality_mode if behavior_context else "none",
     )
     return messages

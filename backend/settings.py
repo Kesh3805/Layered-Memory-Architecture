@@ -97,6 +97,17 @@ class Settings:
     SEMANTIC_K: int = _env_int("SEMANTIC_K", 3)
     SIMILARITY_THRESHOLD: float = _env_float("SIMILARITY_THRESHOLD", 0.65)
 
+    # ── Behavior Engine ───────────────────────────────────────────
+    # Enable the behavioral intelligence layer (conversation state
+    # tracking + behavioral routing between intent and retrieval).
+    BEHAVIOR_ENGINE_ENABLED: bool = _env_bool("BEHAVIOR_ENGINE_ENABLED", True)
+    # Jaccard threshold for word-overlap repetition detection.
+    BEHAVIOR_REPETITION_THRESHOLD: float = _env_float("BEHAVIOR_REPETITION_THRESHOLD", 0.7)
+    # How many past messages to consider for pattern detection.
+    BEHAVIOR_PATTERN_WINDOW: int = _env_int("BEHAVIOR_PATTERN_WINDOW", 10)
+    # Persist conversation state to DB (vs in-memory only).
+    BEHAVIOR_STATE_PERSIST: bool = _env_bool("BEHAVIOR_STATE_PERSIST", True)
+
     # ── Knowledge Base ────────────────────────────────────────────
     KNOWLEDGE_DIR: str = _env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "knowledge"))
     CHUNK_SIZE: int = _env_int("CHUNK_SIZE", 500)

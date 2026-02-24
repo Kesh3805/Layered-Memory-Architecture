@@ -25,6 +25,10 @@ def generate_response(
     curated_history: Optional[list] = None,
     privacy_mode: bool = False,
     greeting_name: str | None = None,
+    behavior_context: str = "",
+    meta_instruction: str = "",
+    personality_mode: str = "default",
+    response_length_hint: str = "normal",
 ) -> str:
     """Generate a complete (non-streaming) response."""
     try:
@@ -37,6 +41,10 @@ def generate_response(
             similar_qa_context=similar_qa_context,
             privacy_mode=privacy_mode,
             greeting_name=greeting_name,
+            behavior_context=behavior_context,
+            meta_instruction=meta_instruction,
+            personality_mode=personality_mode,
+            response_length_hint=response_length_hint,
         )
         return completion(messages)
     except Exception as e:
@@ -53,6 +61,10 @@ def generate_response_stream(
     curated_history: Optional[list] = None,
     privacy_mode: bool = False,
     greeting_name: str | None = None,
+    behavior_context: str = "",
+    meta_instruction: str = "",
+    personality_mode: str = "default",
+    response_length_hint: str = "normal",
 ) -> Generator[str, None, None]:
     """Yield Vercel AI SDK data-stream lines.
 
@@ -71,6 +83,10 @@ def generate_response_stream(
         similar_qa_context=similar_qa_context,
         privacy_mode=privacy_mode,
         greeting_name=greeting_name,
+        behavior_context=behavior_context,
+        meta_instruction=meta_instruction,
+        personality_mode=personality_mode,
+        response_length_hint=response_length_hint,
     )
     try:
         for text in stream_text_deltas(messages):

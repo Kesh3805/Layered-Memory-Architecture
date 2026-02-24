@@ -142,6 +142,43 @@ Guidelines for using this:
 • Never say you don't know the user's name when this frame is present."""
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  BEHAVIOR STATE FRAME (behavioral intelligence layer)
+# ═══════════════════════════════════════════════════════════════════════════
+
+BEHAVIOR_STATE_FRAME = """\
+--- Conversation awareness ---
+{behavior_context}
+{meta_instruction}
+--- End conversation awareness ---"""
+
+PERSONALITY_FRAMES = {
+    "default": "",
+    "concise": (
+        "The user prefers quick, direct answers right now. "
+        "Keep your response brief and skip preambles."
+    ),
+    "detailed": (
+        "The user is exploring in depth. Provide thorough, well-structured "
+        "explanations with examples where helpful."
+    ),
+    "playful": (
+        "Match the lighthearted tone of this conversation. Be warm, witty, "
+        "and personable while still being helpful and accurate."
+    ),
+    "empathetic": (
+        "The user may be frustrated or having difficulty. Be patient, "
+        "acknowledge their experience, and provide extra-careful, "
+        "accurate responses. If you made an error previously, own it."
+    ),
+}
+
+RESPONSE_LENGTH_HINTS = {
+    "brief": "Aim for 1-3 sentences unless the topic demands more.",
+    "normal": "",
+    "detailed": "Provide a thorough, well-structured response.",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  PROFILE DETECTION
 # ═══════════════════════════════════════════════════════════════════════════
 

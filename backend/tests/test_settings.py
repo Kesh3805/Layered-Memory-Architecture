@@ -79,6 +79,13 @@ class TestSettingsDefaults:
         assert settings.DB_POOL_MIN == 1
         assert settings.DB_POOL_MAX == 10
 
+    def test_behavior_engine_defaults(self):
+        from settings import settings
+        assert settings.BEHAVIOR_ENGINE_ENABLED is True
+        assert settings.BEHAVIOR_REPETITION_THRESHOLD == pytest.approx(0.7)
+        assert settings.BEHAVIOR_PATTERN_WINDOW == 10
+        assert settings.BEHAVIOR_STATE_PERSIST is True
+
 
 class TestSettingsEnvOverride:
     def test_max_response_tokens_override(self, monkeypatch):
@@ -106,6 +113,18 @@ class TestSettingsEnvOverride:
     def test_float_override(self, monkeypatch):
         s = _reload_settings(monkeypatch, {"QA_MIN_SIMILARITY": "0.75"})
         assert s.QA_MIN_SIMILARITY == pytest.approx(0.75)
+
+    def test_behavior_engine_disabled_override(self, monkeypatch):
+        s = _reload_settings(monkeypatch, {"BEHAVIOR_ENGINE_ENABLED": "false"})
+        assert s.BEHAVIOR_ENGINE_ENABLED is False
+
+    def test_behavior_repetition_threshold_override(self, monkeypatch):
+        s = _reload_settings(monkeypatch, {"BEHAVIOR_REPETITION_THRESHOLD": "0.5"})
+        assert s.BEHAVIOR_REPETITION_THRESHOLD == pytest.approx(0.5)
+
+    def test_behavior_pattern_window_override(self, monkeypatch):
+        s = _reload_settings(monkeypatch, {"BEHAVIOR_PATTERN_WINDOW": "20"})
+        assert s.BEHAVIOR_PATTERN_WINDOW == 20
 
 
 class TestSettingsImmutability:

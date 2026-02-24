@@ -234,6 +234,15 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_doc_chunks_src ON document_chunks(source);"
         )
 
+        # ── conversation_state (behavioral intelligence layer) ────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_state (
+                conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                state_data      JSONB NOT NULL DEFAULT '{}',
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         cur.close()
         logger.info("Database initialized – intent-gated architecture ready")
         return True
@@ -1006,6 +1015,76 @@ def clear_document_chunks(source: str | None = None) -> None:
         cur.close()
     except Exception as e:
         logger.error(f"Error clearing document chunks: {e}")
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  CONVERSATION STATE (behavioral intelligence persistence)
+# ═══════════════════════════════════════════════════════════════════
+
+def get_conversation_state(conversation_id: str) -> dict | None:
+    """Load conversation state from DB.  Returns raw dict or None."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT state_data FROM conversation_state WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Error loading conversation state: {e}")
+        return None
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def save_conversation_state(conversation_id: str, state_data: dict) -> bool:
+    """Upsert conversation state to DB."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO conversation_state (conversation_id, state_data, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (conversation_id)
+            DO UPDATE SET state_data = EXCLUDED.state_data,
+                          updated_at = CURRENT_TIMESTAMP;
+        """, (conversation_id, Json(state_data)))
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error saving conversation state: {e}")
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def delete_conversation_state(conversation_id: str) -> bool:
+    """Delete conversation state (called on conversation delete)."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM conversation_state WHERE conversation_id = %s;",
+            (conversation_id,),
+        )
+        conn.commit()
+        cur.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting conversation state: {e}")
+        return False
     finally:
         if conn is not None:
             put_connection(conn)

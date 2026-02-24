@@ -2,7 +2,7 @@
 
 > Feature-by-feature comparison between OpenAI's ChatGPT and this self-hosted RAG Chat framework.
 >
-> **Version 4.1.0** — Last updated with current implementation state.
+> **Version 5.0.0** — Last updated with current implementation state.
 
 ---
 
@@ -222,6 +222,8 @@ These are architectural advantages that ChatGPT cannot offer:
 | Background tasks | Managed | Bounded ThreadPoolExecutor + atexit cleanup |
 | Prompt management | Unknown | Single file (prompts.py), no scattered strings |
 | Behavior rules | Prompt-embedded | Separate policy.py with deterministic rules |
+| **Behavioral intelligence** | Implicit (hidden in model weights) | Explicit conversational state tracking (19 fields), 8 behavior modes, 5 personality modes, priority-ordered behavioral routing — fully observable and tunable |
+| **Conversation memory tiers** | Single implicit context | 3 explicit tiers: episodic (user_queries), semantic (user_profile), conversational (conversation_state) |
 
 ---
 
