@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "rag-chat"
-version = "4.0.0"
+version = "4.1.0"
 description = "Policy-driven, intent-gated RAG chat framework — pluggable LLM providers, pgvector, AI-native React UI."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,14 +31,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cerebras = ["cerebras-cloud-sdk>=1.0.0"]
-openai   = ["openai>=1.0.0"]
+cerebras  = ["cerebras-cloud-sdk>=1.0.0"]
+openai    = ["openai>=1.0.0"]
 anthropic = ["anthropic>=0.20.0"]
-cache    = ["redis>=5.0.0"]
-all      = ["rag-chat[cerebras,openai,anthropic,cache]"]
+cache     = ["redis>=5.0.0"]
+gpu       = ["torch>=2.0.0"]
+all       = ["rag-chat[cerebras,openai,anthropic,cache,gpu]"]
 
 [project.scripts]
-rag-chat = "cli:main"
+rag-chat = "backend.cli:main"
 
 [tool.ruff]
 line-length = 100
@@ -47,7 +48,7 @@ select = ["E", "F", "I", "UP", "W"]
 ignore = ["E501"]
 
 [tool.ruff.per-file-ignores]
-"llm/providers/*.py" = ["F401"]
+"backend/llm/providers/*.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -55,6 +56,6 @@ ignore_missing_imports = true
 warn_unused_ignores = false
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["backend/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]

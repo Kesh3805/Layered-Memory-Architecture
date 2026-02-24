@@ -42,8 +42,8 @@ Every message passes through a classifier before any retrieval occurs:
 
 | Intent | What Gets Retrieved | Approx. Cost |
 |---|---|---|
-| `general` | Nothing — LLM only | Minimal |
-| `continuation` | Curated history + semantic pruning | Low |
+| `general` | Adaptive RAG (high-similarity docs only) | Low |
+| `continuation` | Curated history + adaptive RAG | Low–Medium |
 | `knowledge_base` | pgvector docs + cross-conversation Q&A | Full |
 | `profile` | User profile entries (when a question) | Low |
 | `privacy` | Profile + transparency rules | Low |
@@ -97,7 +97,8 @@ vector_store.py          # Document search (pgvector + numpy fallback)
 embeddings.py            # BAAI/bge-base-en-v1.5, 768-dim, asymmetric retrieval
 hooks.py                 # Extension points (decorator-based)
 cache.py                 # Optional Redis cache (no-op when disabled)
-worker.py                # Background task runner
+chunker.py               # Paragraph → sentence → character text chunker
+worker.py                # Background task runner (bounded thread pool)
 cli.py                   # Developer CLI: init / ingest / dev
 
 llm/
@@ -116,7 +117,7 @@ llm/
 
 knowledge/               # Drop .txt / .md files here — auto-indexed
 frontend/                # React 18 + Vite + Tailwind + Vercel AI SDK
-tests/                   # 117 tests across classifier, policy,
+tests/                   # 126+ tests across classifier, policy,
                          #   context manager, prompt orchestrator, chunker
 ```
 
@@ -209,8 +210,11 @@ Four hook points: `before_generation` · `after_generation` · `policy_override`
 |---|---|---|
 | `POST` | `/chat/stream` | Streaming chat (SSE — Vercel AI SDK compatible) |
 | `POST` | `/chat` | Non-streaming chat |
+| `POST` | `/chat/regenerate` | Re-generate last assistant response |
 | `GET` | `/health` | Status, DB connection, doc count, provider name |
 | `GET/POST/PUT/DELETE` | `/conversations` | Conversation CRUD |
+| `GET` | `/conversations/search?q=` | Full-text search across messages |
+| `GET` | `/conversations/{id}/export` | Export conversation as JSON |
 | `GET/POST/PUT/DELETE` | `/profile` | Per-user profile management |
 
 ---

@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root (one level above backend/)
+_project_root = Path(__file__).resolve().parent.parent
+load_dotenv(_project_root / ".env")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -95,7 +98,7 @@ class Settings:
     SIMILARITY_THRESHOLD: float = _env_float("SIMILARITY_THRESHOLD", 0.65)
 
     # ── Knowledge Base ────────────────────────────────────────────
-    KNOWLEDGE_DIR: str = _env("KNOWLEDGE_DIR", "knowledge")
+    KNOWLEDGE_DIR: str = _env("KNOWLEDGE_DIR", str(Path(__file__).resolve().parent.parent / "knowledge"))
     CHUNK_SIZE: int = _env_int("CHUNK_SIZE", 500)
     CHUNK_OVERLAP: int = _env_int("CHUNK_OVERLAP", 50)
     FORCE_REINDEX: bool = _env_bool("FORCE_REINDEX", False)

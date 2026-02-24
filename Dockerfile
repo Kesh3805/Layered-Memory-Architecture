@@ -17,15 +17,23 @@ RUN apt-get clean \
 
 
 
-COPY requirements.txt .
+COPY backend/requirements.txt ./requirements.txt
 
-# Install CPU-only PyTorch first (good move 👍)
+# Install CPU-only PyTorch first (smaller image, no CUDA)
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy project files
+COPY backend/ ./backend/
+COPY knowledge/ ./knowledge/
+COPY frontend/dist/ ./frontend/dist/
 
 EXPOSE 8000
+
+WORKDIR /app/backend
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

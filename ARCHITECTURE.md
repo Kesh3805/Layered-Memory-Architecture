@@ -23,7 +23,7 @@ Three differentiators:
 ```bash
 # 1. Clone and init
 git clone <repo> && cd rag-chat
-python cli.py init            # Creates knowledge/, copies .env
+python backend/cli.py init        # Creates knowledge/, copies .env
 
 # 2. Add your API key
 # Edit .env → LLM_API_KEY=your-key-here
@@ -33,10 +33,10 @@ docker compose up postgres -d
 
 # 4. Add knowledge (optional — ships with example)
 # Drop .txt/.md files into knowledge/
-python cli.py ingest
+python backend/cli.py ingest
 
 # 5. Run
-python cli.py dev             # → http://localhost:8000
+python backend/cli.py dev         # → http://localhost:8000
 ```
 
 Or with Docker: `docker compose up --build`
@@ -54,7 +54,7 @@ Or with Docker: `docker compose up --build`
                        │  HTTP / SSE (Vercel AI SDK data stream)
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                    FastAPI  (main.py)  v4.0.0                    │
+│                    FastAPI  (main.py)  v4.1.0                    │
 │                                                                  │
 │  POST /chat/stream   ──► run_pipeline() ──► hooks ──► generate   │
 │  POST /chat          │                                           │
@@ -84,35 +84,40 @@ Or with Docker: `docker compose up --build`
 ## File Map
 
 ```
-settings.py              ← Every tunable in one place
-hooks.py                 ← Extension points (before/after generation, policy override)
-cache.py                 ← Optional Redis (no-op when disabled)
-worker.py                ← Background task runner (thread-based)
-cli.py                   ← CLI: init, ingest, dev
+backend/
+  settings.py              ← Every tunable in one place
+  hooks.py                 ← Extension points (before/after generation, policy override)
+  cache.py                 ← Optional Redis (no-op when disabled)
+  worker.py                ← Background task runner (thread-based)
+  cli.py                   ← CLI: init, ingest, dev
 
-main.py                  ← FastAPI app + pipeline + endpoints
-policy.py                ← BehaviorPolicy engine (deterministic rules)
-query_db.py              ← PostgreSQL + pgvector (all persistence)
-vector_store.py          ← Document search (pgvector-backed, in-memory fallback)
-embeddings.py            ← Local sentence-transformer model
+  main.py                  ← FastAPI app + pipeline + endpoints
+  policy.py                ← BehaviorPolicy engine (deterministic rules)
+  context_manager.py       ← Token budgeting + progressive summarization
+  query_db.py              ← PostgreSQL + pgvector (all persistence)
+  vector_store.py          ← Document search (pgvector-backed, in-memory fallback)
+  embeddings.py            ← Local sentence-transformer model
+  chunker.py               ← Semantic text splitting
 
-llm/
-  providers/
-    base.py              ← LLMProvider ABC (2 methods: complete, stream_text_deltas)
-    cerebras.py          ← Cerebras Cloud SDK
-    openai.py            ← OpenAI (also Azure, vLLM, Ollama via base_url)
-    anthropic.py         ← Anthropic Messages API
-    __init__.py          ← Dynamic loader (reads LLM_PROVIDER from settings)
-  client.py              ← Thin wrapper: delegates to active provider
-  classifier.py          ← Intent classification (pre-heuristics + LLM)
-  prompts.py             ← All prompt templates (single source of truth)
-  prompt_orchestrator.py ← Builds message lists from PolicyDecision
-  generators.py          ← Response generation (stream + batch + titles)
-  profile_detector.py    ← Extract personal info from messages
+  llm/
+    providers/
+      base.py              ← LLMProvider ABC (2 methods: complete, stream_text_deltas)
+      cerebras.py          ← Cerebras Cloud SDK
+      openai.py            ← OpenAI (also Azure, vLLM, Ollama via base_url)
+      anthropic.py         ← Anthropic Messages API
+      __init__.py          ← Dynamic loader (reads LLM_PROVIDER from settings)
+    client.py              ← Thin wrapper: delegates to active provider
+    classifier.py          ← Intent classification (pre-heuristics + LLM)
+    prompts.py             ← All prompt templates (single source of truth)
+    prompt_orchestrator.py ← Builds message lists from PolicyDecision
+    generators.py          ← Response generation (stream + batch + titles)
+    profile_detector.py    ← Extract personal info from messages
+
+  tests/                   ← 126 unit tests
+  DOCS.md                  ← Full implementation documentation
+  CHATGPT_GAP_ANALYSIS.md  ← Feature comparison vs ChatGPT
 
 knowledge/               ← Drop .txt/.md files here → auto-indexed
-  example.txt            ← Shipped example knowledge base
-
 frontend/                ← React 18 + Vite + Tailwind + AI SDK + Zustand
   src/components/ai/     ← AI-native observability primitives
 
@@ -303,10 +308,10 @@ User message arrives
 | Want to... | Do this |
 |---|---|
 | Change LLM | Set `LLM_PROVIDER` + `LLM_API_KEY` in `.env` |
-| Add LLM provider | Subclass `llm/providers/base.py`, register in `__init__.py` |
-| Change knowledge base | Drop files in `knowledge/`, run `python cli.py ingest` |
-| Modify behavior rules | Edit `policy.py` → `BehaviorPolicy.resolve()` |
-| Add custom logic | Use decorators in `hooks.py` |
+| Add LLM provider | Subclass `backend/llm/providers/base.py`, register in `__init__.py` |
+| Change knowledge base | Drop files in `knowledge/`, run `python backend/cli.py ingest` |
+| Modify behavior rules | Edit `backend/policy.py` → `BehaviorPolicy.resolve()` |
+| Add custom logic | Use decorators in `backend/hooks.py` |
 | Change retrieval depth | Set `RETRIEVAL_K`, `QA_K` in `.env` |
 | Change embedding model | Set `EMBEDDING_MODEL` in `.env` |
 | Add caching | Set `ENABLE_CACHE=true`, `REDIS_URL` in `.env` |
@@ -353,7 +358,7 @@ Key features:
 | Context Mgmt | `context_manager.py` (token budgeting, history trimming, LLM summarization) |
 | Config | `settings.py` (env-driven, single source of truth) |
 | Extensions | `hooks.py` (4 decorator-based extension points) |
-| CLI | `python cli.py init/ingest/dev` |
+| CLI | `python backend/cli.py init/ingest/dev` |
 | Deploy | Docker Compose (single command startup) |
 
 ---

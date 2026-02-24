@@ -55,8 +55,10 @@ class TestSettingsDefaults:
         assert settings.SEMANTIC_K == 3
 
     def test_knowledge_base_defaults(self):
+        from pathlib import Path
         from settings import settings
-        assert settings.KNOWLEDGE_DIR == "knowledge"
+        expected_kb = str(Path(__file__).resolve().parent.parent.parent / "knowledge")
+        assert settings.KNOWLEDGE_DIR == expected_kb
         assert settings.CHUNK_SIZE == 500
         assert settings.CHUNK_OVERLAP == 50
         assert settings.FORCE_REINDEX is False

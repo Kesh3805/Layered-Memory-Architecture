@@ -10,7 +10,7 @@ dist/
 build/
 
 # Tests (not needed in production image)
-tests/
+backend/tests/
 
 # Dev / IDE
 .env
@@ -23,9 +23,9 @@ tests/
 ARCHITECTURE.md
 knowledge/
 
-# Frontend build artifacts (served separately or via CDN)
+# Frontend source (dist is copied explicitly in Dockerfile)
 frontend/node_modules/
-frontend/dist/
+frontend/src/
 frontend/.next/
 
 # Stale artifacts (removed)

@@ -20,7 +20,7 @@ logger = logging.getLogger("rag-cli")
 
 def cmd_init(args):
     """Scaffold project: create knowledge/ dir, copy .env.example → .env."""
-    root = Path(".")
+    root = Path(__file__).resolve().parent.parent
 
     # Create knowledge dir
     kb = root / "knowledge"
@@ -108,6 +108,7 @@ def cmd_dev(args):
     host = args.host or settings.HOST
     port = args.port or settings.PORT
 
+    backend_dir = Path(__file__).resolve().parent
     logger.info(f"Starting dev server at http://{host}:{port}")
     subprocess.run(
         [
@@ -117,6 +118,7 @@ def cmd_dev(args):
             "--port", str(port),
             "--reload",
         ],
+        cwd=str(backend_dir),
         check=False,
     )
 

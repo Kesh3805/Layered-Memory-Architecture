@@ -652,7 +652,7 @@ def health_check():
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Serve React build assets if available
-_dist = Path(__file__).parent / "frontend" / "dist"
+_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _dist.exists() and (_dist / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(_dist / "assets")), name="frontend-assets")
 
