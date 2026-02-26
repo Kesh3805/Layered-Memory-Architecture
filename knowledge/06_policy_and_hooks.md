@@ -167,11 +167,15 @@ Current implementation uses threading.Thread(target=fn, daemon=True). Daemon thr
 
 ## CLI — cli.py
 
-python cli.py init: Scaffold a new project. Creates the knowledge/ directory, copies .env.example to .env (if .env doesn't exist), and prints a getting-started message.
+python cli.py init: Scaffold a new project. Creates knowledge/ directory, copies .env.example to .env.
 
-python cli.py ingest [DIR]: Index knowledge base files into PostgreSQL. Optional DIR overrides the KNOWLEDGE_DIR setting. Reads all .txt and .md files. For each file: calls vector_store.clear(source) to remove old chunks for that file, then chunks the text and calls vector_store.add_documents(). Prints progress.
+python cli.py ingest [DIR]: Index knowledge base files into PostgreSQL. Clears old chunks per source file, then chunks and indexes.
 
-python cli.py dev: Start the development server. Runs uvicorn main:app --host HOST --port PORT --reload using the settings.HOST and settings.PORT values. Equivalent to running uvicorn directly.
+python cli.py dev: Start uvicorn dev server with hot-reload.
+
+python cli.py memory inspect [--conversation CID] [--insights-only]: Print full cognitive state for all or one conversation. Shows threads (labels, message counts, summaries), insights (type, text, confidence), and concept links. --insights-only skips thread details.
+
+python cli.py memory query <text> [--k N] [--type TYPE]: Semantic search across research insights. Embeds the query, searches research_insights via pgvector. Optional --type filter (decision/conclusion/hypothesis/open_question/observation). Prints ranked results with similarity, type, confidence, and source thread.
 
 ## Vector Store — vector_store.py
 

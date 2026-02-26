@@ -1,197 +1,329 @@
-# RAG Chat — Framework Architecture
+# Layered Memory Architecture (LMA) — System Design
 
-> **Stop building naive RAG.  Start building policy-aware AI systems.**
+> **Version 6.0.0** — This is how serious LLM systems should be built.
 
-An opinionated, extensible conversational AI starter framework.  Intent-driven, policy-gated, observable by default.
-
-## What Makes This Different
-
-Most RAG templates do this: dump docs into a vector DB, call the LLM with context.
-
-This framework does this: **classify intent first, then selectively retrieve only what's needed, governed by deterministic policy rules, with full observability in the UI.**
-
-Three differentiators:
-
-1. **Intent → Policy → Orchestrator separation** — Rare, powerful, your signature
-2. **Stage streaming protocol** — Real-time pipeline observability in the browser
-3. **AI-native UI primitives** — Debug mode, intent badges, retrieval panels out of the box
+A reference implementation of the Layered Memory Architecture for LLM systems. Multi-tier persistent memory, deterministic retrieval routing, background cognition extraction, and full pipeline observability.
 
 ---
 
-## Quick Start
+## Design Principles
 
-```bash
-# 1. Clone and init
-git clone <repo> && cd rag-chat
-python backend/cli.py init        # Creates knowledge/, copies .env
-
-# 2. Add your API key
-# Edit .env → LLM_API_KEY=your-key-here
-
-# 3. Start PostgreSQL
-docker compose up postgres -d
-
-# 4. Add knowledge (optional — ships with example)
-# Drop .txt/.md files into knowledge/
-python backend/cli.py ingest
-
-# 5. Run
-python backend/cli.py dev         # → http://localhost:8000
+```
+1. Memory is structured, not appended.
+2. Retrieval is policy-bound, not automatic.
+3. Behavior is inferred, not manually toggled.
+4. State is inspectable at every layer.
+5. Determinism first. Generation second.
 ```
 
-Or with Docker: `docker compose up --build`
-
 ---
 
-## Architecture Overview
+## System Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                   React Frontend (frontend/)                     │
-│  AI-native components · Debug mode · Command palette · Streaming │
+│  Pipeline timeline · Thread panel · Research dashboard · Debug   │
 │  Vite + Tailwind + Vercel AI SDK (useChat) + Zustand             │
 └──────────────────────┬───────────────────────────────────────────┘
                        │  HTTP / SSE (Vercel AI SDK data stream)
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                    FastAPI  (main.py)  v4.1.0                    │
+│                    FastAPI  (main.py)  v6.0.0                    │
 │                                                                  │
 │  POST /chat/stream   ──► run_pipeline() ──► hooks ──► generate   │
-│  POST /chat          │                                           │
-│  GET /health         │   Conversations + Profile CRUD            │
+│  POST /chat          │   24 routes total                         │
+│  GET /health         │   Conversations + Research + Profile CRUD │
 │  GET /               │   Serve React or fallback HTML            │
-└─────────┬───────────┴────────┬────────┬──────────────────────────┘
-          │                    │        │
-  ┌───────▼───────┐    ┌──────▼──┐  ┌──▼──────────┐
-  │  llm/ package │    │query_db │  │vector_store  │
-  │  ├ providers/ │    │PostgreSQL│  │  pgvector    │
-  │  │ ├ base    │    │ pgvector │  │ (persistent) │
-  │  │ ├ cerebras│    └──────────┘  └──────────────┘
-  │  │ ├ openai  │
-  │  │ └ anthrop.│    ┌──────────┐  ┌──────────────┐
-  │  ├ client    │    │policy.py │  │ settings.py  │
-  │  ├ classifier│    │ Behavior │  │  All config   │
-  │  ├ orchestr. │    │  Policy  │  └──────────────┘
-  │  ├ generators│    └──────────┘
-  │  └ profiler  │                  ┌──────────────┐
-  └──────────────┘                  │  hooks.py    │
-                                    │  Extensions  │
-                                    └──────────────┘
+└─────────┬───────────┴───┬────────┬───────────┬───────────────────┘
+          │               │        │           │
+  ┌───────▼───────┐ ┌────▼─────┐ ┌▼─────────┐ ┌▼──────────────────┐
+  │  llm/ package │ │ query_db │ │vector_   │ │ LMA Subsystems    │
+  │  ├ providers/ │ │PostgreSQL│ │store     │ │ ├ topic_threading  │
+  │  │ ├ cerebras│ │ pgvector │ │ pgvector │ │ ├ research_memory  │
+  │  │ ├ openai  │ │ 9 tables │ │ + numpy  │ │ ├ behavior_engine  │
+  │  │ └ anthrop.│ └──────────┘ │ fallback │ │ ├ conversation_    │
+  │  ├ client    │              └──────────┘ │ │   state           │
+  │  ├ classifier│                           │ ├ thread_summarizer│
+  │  ├ orchestr. │  ┌──────────┐ ┌────────┐ │ └ policy           │
+  │  ├ generators│  │ hooks.py │ │settings│ └──────────────────────┘
+  │  └ profiler  │  │ 4 hooks  │ │56 vars │
+  └──────────────┘  └──────────┘ └────────┘
 ```
 
 ---
 
-## File Map
+## The Four Memory Tiers
+
+The core pattern. Most LLM systems have one tier (last N messages). LMA has four.
 
 ```
-backend/
-  settings.py              ← Every tunable in one place
-  hooks.py                 ← Extension points (before/after generation, policy override)
-  cache.py                 ← Optional Redis (no-op when disabled)
-  worker.py                ← Background task runner (thread-based)
-  cli.py                   ← CLI: init, ingest, dev
+┌──────────────────────────────────────────────────────────────────┐
+│                   LAYERED MEMORY ARCHITECTURE                    │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  RESEARCH MEMORY              Permanent · Cross-thread     │  │
+│  │  Decisions · Conclusions · Hypotheses · Concept graph      │  │
+│  │  Tables: research_insights, concept_links                  │  │
+│  │  Code: research_memory.py                                  │  │
+│  ├────────────────────────────────────────────────────────────┤  │
+│  │  CONVERSATIONAL STATE         Per-conversation             │  │
+│  │  Tone · Repetition · Precision mode · Active threads       │  │
+│  │  Tables: conversation_state, conversation_threads          │  │
+│  │  Code: conversation_state.py, topic_threading.py           │  │
+│  ├────────────────────────────────────────────────────────────┤  │
+│  │  SEMANTIC PROFILE             Permanent · Per-user         │  │
+│  │  Identity · Preferences · Expertise domains                │  │
+│  │  Tables: user_profile                                      │  │
+│  │  Code: llm/profile_detector.py                             │  │
+│  ├────────────────────────────────────────────────────────────┤  │
+│  │  EPISODIC MEMORY              Permanent                    │  │
+│  │  Raw embeddings · QA pairs · Timestamps                    │  │
+│  │  Tables: user_queries, chat_messages                       │  │
+│  │  Code: query_db.py                                         │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-  main.py                  ← FastAPI app + pipeline + endpoints
-  policy.py                ← BehaviorPolicy engine (deterministic rules)
-  context_manager.py       ← Token budgeting + progressive summarization
-  query_db.py              ← PostgreSQL + pgvector (all persistence)
-  vector_store.py          ← Document search (pgvector-backed, in-memory fallback)
-  embeddings.py            ← Local sentence-transformer model
-  chunker.py               ← Semantic text splitting
+The **research tier** is the differentiator. After every response, a background pass extracts structured insights (decisions, conclusions, open questions, hypotheses, observations) and indexes them as embeddings. Next time a related topic surfaces — even in a different thread — those insights are retrieved and injected.
 
-  llm/
-    providers/
-      base.py              ← LLMProvider ABC (2 methods: complete, stream_text_deltas)
-      cerebras.py          ← Cerebras Cloud SDK
-      openai.py            ← OpenAI (also Azure, vLLM, Ollama via base_url)
-      anthropic.py         ← Anthropic Messages API
-      __init__.py          ← Dynamic loader (reads LLM_PROVIDER from settings)
-    client.py              ← Thin wrapper: delegates to active provider
-    classifier.py          ← Intent classification (pre-heuristics + LLM)
-    prompts.py             ← All prompt templates (single source of truth)
-    prompt_orchestrator.py ← Builds message lists from PolicyDecision
-    generators.py          ← Response generation (stream + batch + titles)
-    profile_detector.py    ← Extract personal info from messages
+---
 
-  tests/                   ← 126 unit tests
-  DOCS.md                  ← Full implementation documentation
-  CHATGPT_GAP_ANALYSIS.md  ← Feature comparison vs ChatGPT
+## Pipeline Flow (12 Steps)
 
-knowledge/               ← Drop .txt/.md files here → auto-indexed
-frontend/                ← React 18 + Vite + Tailwind + AI SDK + Zustand
-  src/components/ai/     ← AI-native observability primitives
-
-.env.example             ← Template with all settings documented
-docker-compose.yml       ← PostgreSQL + optional Redis + app
+```
+User message arrives
+       │
+       ▼
+  ┌─ PARALLEL (ThreadPoolExecutor) ─────────────────────────────┐
+  │  1. Embed query (BAAI/bge-base-en-v1.5, 768-dim)           │
+  │  2. Load history (PostgreSQL)                               │
+  │  3. Load profile (PostgreSQL)                               │
+  └─────────────────────────────────────────────────────────────┘
+       │
+       ▼
+  4a. Classify intent (heuristic → LLM fallback → cache)
+      5 intents: general · continuation · knowledge_base · profile · privacy
+       │
+       ▼
+  4b. Topic similarity gate
+      continuation + cosine_sim < 0.35 → downgrade to general
+       │
+       ▼
+  4c. Behavior engine evaluation
+      ConversationState → BehaviorDecision (8 modes, personality, retrieval mod)
+       │
+       ▼
+  4d. Topic threading
+      resolve_thread() → EMA centroid similarity → attach or create thread
+       │
+       ▼
+  4e. Research context
+      get_research_context() → related insights + concept links for active thread
+       │
+       ▼
+  5a. Policy resolution
+      extract_context_features() → BehaviorPolicy.resolve() → Hooks.policy_override()
+       │
+       ▼
+  5b. Apply behavior overrides
+      BehaviorDecision → adjust retrieval depth, skip/reduce/boost
+       │
+       ▼
+  6. History pruning
+      Recency window + semantic retrieval of older relevant messages
+       │
+       ▼
+  7. Selective retrieval
+      Policy-gated: RAG docs, cross-conv Q&A, same-conv Q&A, profile context
+       │
+       ▼
+  8. Hooks.before_generation()
+       │
+       ▼
+  9. Generate response (stream or batch via active LLM provider)
+       │
+       ▼
+  10. Hooks.after_generation() → Hooks.before_persist()
+       │
+       ▼
+  11-12. Background persist (worker.submit → non-blocking):
+         Store messages → update topic vector (EMA, α=0.2) → auto-title
+         → detect profile updates → save conversation state
+         → extract research insights → link concepts → summarize thread
 ```
 
 ---
 
-## Core Concepts
+## Core Subsystems
 
-### 1. Intent Classification
+### Intent Classification
 
-Every message is classified into one of five intents **before** any retrieval:
+Every message is classified **before** any retrieval happens.
 
-| Intent | What Happens | LLM Receives |
-|---|---|---|
-| `general` | No retrieval | System prompt + query only |
-| `knowledge_base` | pgvector doc search + cross-conv Q&A | Docs + Q&A + history + query |
-| `continuation` | Same-conversation Q&A | Curated history + Q&A + query |
-| `profile` (statement) | Nothing (saved in background) | System prompt + query |
-| `profile` (question) | User profile data | Profile + query |
-| `privacy` | Profile + transparency rules | Profile + privacy frame + query |
+| Intent | Retrieval | LLM Receives |
+|--------|-----------|-------------|
+| `general` | None | System prompt + query |
+| `knowledge_base` | pgvector docs + Q&A | Docs + Q&A + history + query |
+| `continuation` | Same-conv Q&A | Curated history + Q&A + query |
+| `profile` (statement) | None (saved in background) | System prompt + query |
+| `profile` (question) | User profile | Profile + query |
+| `privacy` | Profile + rules | Profile + privacy frame + query |
 
-**Pre-heuristics** skip the LLM call entirely for common patterns:
-- Greetings ("hi", "hello") → `general` at 0.97 confidence
-- Profile statements ("My name is…") → `profile` at 0.92
-- Privacy phrases ("do you store my data") → `privacy` at 0.95
-- Short pronoun follow-ups ("what about that?") → `continuation` at 0.85
+Pre-heuristics bypass the LLM call for greetings, profile statements, privacy phrases, and short follow-ups.
 
-### 2. BehaviorPolicy Engine
+### Policy Engine
 
-`policy.py` contains **deterministic rules** that decide what context to inject:
+Deterministic rules that decide what context to inject. No prompts, no LLM calls.
 
 ```python
 features = extract_context_features(query, intent, profile_entries, ...)
 decision = BehaviorPolicy().resolve(features, intent)
-decision = Hooks.run_policy_override(features, decision)  # ← your code here
+decision = Hooks.run_policy_override(features, decision)
 ```
 
-The `PolicyDecision` dataclass controls everything:
-- `inject_rag` — fetch documents from pgvector
-- `inject_profile` — include user profile
-- `inject_qa_history` — include prior Q&A
-- `privacy_mode` — activate transparency rules
-- `greeting_name` — personalize with user's name
-- `retrieval_route` — label for observability
+The `PolicyDecision` controls: `inject_rag`, `inject_profile`, `inject_qa_history`, `privacy_mode`, `greeting_name`, `retrieval_route`, `rag_k`, `rag_min_similarity`.
 
-**Why this matters:** Rules are editable without touching prompts or LLM code.
+### Topic Threading
 
-### 3. Pluggable LLM Providers
+EMA-updated embedding centroids group messages into topical threads.
 
-```env
-LLM_PROVIDER=cerebras      # or: openai, anthropic
-LLM_API_KEY=your-key
-LLM_MODEL=                  # empty = provider default
-LLM_BASE_URL=               # optional: vLLM, Azure, Ollama
-```
+- Up to 12 active threads per conversation
+- `resolve_thread()` computes cosine similarity against all thread centroids
+- Above `THREAD_ATTACH_THRESHOLD` (0.55) → attach to existing thread
+- Below threshold → create new thread
+- Centroids updated via exponential moving average after each message
+- Threads summarized every `THREAD_SUMMARY_INTERVAL` (8) messages
 
-Every provider implements `LLMProvider` (2 methods):
-- `complete(messages) → str`
-- `stream_text_deltas(messages) → Generator[str]`
+### Research Memory
 
-Add a new provider: subclass `llm/providers/base.py`, register in `__init__.py`.
+Background cognition extraction — the system learns from every interaction.
 
-### 4. Stage Streaming Protocol
+1. After each response, LLM extracts structured insights: `decision`, `conclusion`, `hypothesis`, `open_question`, `observation`
+2. Insights stored with embeddings in `research_insights` table
+3. Concept nouns extracted and linked in `concept_links` table
+4. On next related query (even in a different thread), insights resurface via semantic search
+5. Cross-thread concept graph connects ideas across topics
 
-Vercel AI SDK data stream format over SSE:
+### Behavior Engine
+
+8 modes that modulate retrieval and generation:
+
+| Mode | Trigger | Effect |
+|------|---------|--------|
+| `standard` | Default | Normal RAG pipeline |
+| `greeting` | Social messages | Minimal/no retrieval |
+| `repetition_aware` | Repeated patterns | Vary response, acknowledge pattern |
+| `testing_aware` | Probing the system | Meta-honest engagement |
+| `meta_aware` | Commenting on AI | Self-aware, steer back |
+| `frustration_recovery` | Frustration signals | Empathetic, thorough |
+| `rapid_fire` | Short rapid messages | Concise, direct |
+| `exploratory` | Open-ended exploration | Broader context, diverse retrieval |
+
+Priority: frustration_recovery > testing_aware > meta_aware > repetition_aware > greeting > rapid_fire > exploratory > standard
+
+### Conversation State
+
+19-field state tracked per conversation:
+
+- Tone tracking (formal/informal ratio)
+- Repetition detection (embedding similarity history)
+- Query pattern analysis (length, frequency, question ratio)
+- **Precision mode** (auto-detected from query structure):
+  - `concise` — short factual answers
+  - `analytical` — structured comparisons
+  - `speculative` — open-ended exploration
+  - `implementation` — code and how-to
+  - `adversarial` — challenge and critique
+
+### 5 Precision Modes
+
+| Mode | Detected By | Effect |
+|------|------------|--------|
+| `concise` | Short direct queries | Brief responses, minimal context |
+| `analytical` | Comparison/evaluation queries | Structured, detailed |
+| `speculative` | "What if" / exploratory queries | Exploratory tone |
+| `implementation` | "How to" / code queries | Code-focused |
+| `adversarial` | Challenge/critique queries | Critical analysis |
+
+---
+
+## Database Schema (9 Tables)
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `conversations` | Conversation metadata + rolling topic embedding | id, title, message_count, topic_embedding (vector 768) |
+| `chat_messages` | All user + assistant messages | conversation_id, role, content, timestamp |
+| `user_queries` | Query embeddings for semantic Q&A search | query_text, embedding (vector 768), response_text |
+| `user_profile` | Persistent user facts (key-value) | user_id, key, value, category |
+| `document_chunks` | Knowledge base vectors | content, embedding (vector 768), source |
+| `conversation_state` | Serialized ConversationState per conversation | state_data (JSONB) |
+| `conversation_threads` | Topic thread centroids + metadata | centroid_embedding (vector 768), summary, label, message_count |
+| `research_insights` | Extracted insights with embeddings | insight_type, insight_text, embedding (vector 768), confidence_score |
+| `concept_links` | Cross-thread concept graph | concept, embedding (vector 768), source_type, source_id |
+
+All tables managed by `query_db.py` (50+ functions). Single PostgreSQL + pgvector instance.
+
+---
+
+## API Surface (24 Routes)
+
+### Core
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/chat` | Batch response |
+| `POST` | `/chat/stream` | SSE streaming (Vercel AI SDK compatible) |
+| `POST` | `/chat/regenerate` | Re-generate last assistant turn |
+
+### Conversations
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/conversations` | Create |
+| `GET` | `/conversations` | List |
+| `GET` | `/conversations/search` | Full-text search |
+| `GET` | `/conversations/{id}` | Get by ID |
+| `GET` | `/conversations/{id}/messages` | Messages |
+| `PUT` | `/conversations/{id}` | Rename |
+| `DELETE` | `/conversations/{id}` | Delete |
+| `GET` | `/conversations/{id}/export` | JSON export |
+| `GET` | `/conversations/{id}/state` | Behavioral state (debug) |
+
+### Research
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/conversations/{id}/threads` | Topic threads |
+| `GET` | `/conversations/{id}/threads/{tid}` | Thread detail + insights |
+| `GET` | `/conversations/{id}/insights` | Conversation insights |
+| `GET` | `/conversations/{id}/concepts` | Concept links |
+| `GET` | `/insights/search?q=...&type=...` | Cross-thread insight search |
+| `GET` | `/concepts/search?q=...` | Cross-thread concept search |
+
+### Profile
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/profile` | Get entries |
+| `POST` | `/profile` | Add/upsert |
+| `PUT` | `/profile/{id}` | Update |
+| `DELETE` | `/profile/{id}` | Delete |
+
+### System
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Status, DB, version, model |
+| `GET` | `/` | Serve frontend |
+
+---
+
+## Stage Streaming Protocol
+
+Real-time pipeline observability via Vercel AI SDK data stream format:
 
 ```
 8:[{"stage":"classified","intent":"knowledge_base","confidence":0.92}]
+8:[{"stage":"threaded","thread_id":"...","label":"Caching Architecture"}]
 8:[{"stage":"retrieved","retrieval_info":{"num_docs":4}}]
 8:[{"stage":"generating"}]
-0:"The"                    ← text delta
+0:"The"
 0:" answer"
 0:" is..."
 8:[{"intent":"knowledge_base","confidence":0.92,"retrieval_info":{...}}]
@@ -199,176 +331,122 @@ e:{"finishReason":"stop"}
 d:{"finishReason":"stop"}
 ```
 
-The frontend renders these as a real-time pipeline timeline.
+---
 
-### 5. Extension Hooks
+## Extension Hooks
 
-Register hooks with decorators — no core code changes needed:
+4 injection points. No fork required.
 
-```python
-from hooks import Hooks
-
-@Hooks.before_generation
-def add_custom_context(pipeline_result):
-    pipeline_result.rag_context += "\nCustom: extra context"
-    return pipeline_result
-
-@Hooks.after_generation
-def filter_response(response, pipeline_result):
-    return response.replace("sensitive_word", "***")
-
-@Hooks.policy_override
-def force_rag_for_questions(features, decision):
-    if "?" in features.query:
-        decision.inject_rag = True
-    return decision
-```
-
-### 6. Centralized Configuration
-
-Everything tunable lives in `settings.py`, driven by env vars:
-
-```python
-from settings import settings
-
-settings.RETRIEVAL_K              # 4  (documents per search)
-settings.TOPIC_CONTINUATION_THRESHOLD  # 0.35
-settings.CHUNK_SIZE               # 500
-settings.ENABLE_CACHE             # False (set ENABLE_CACHE=true for Redis)
-settings.LLM_PROVIDER             # "cerebras"
-settings.MAX_CONTEXT_WINDOW       # 65536
-```
-
-No hunting through scattered constants across files.
-
-### 7. Single Database Layer
-
-PostgreSQL + pgvector handles **everything**:
-- Conversations & messages
-- User profile (key-value)
-- Query embeddings (semantic Q&A search)
-- Document chunks (knowledge base vectors)
-- Topic vectors (conversation continuity)
-
-No FAISS. No separate vector DB. One database, one backup, one deployment.
-
-Tables: `conversations`, `chat_messages`, `user_queries`, `user_profile`, `document_chunks`
-
-### 8. Optional Redis Cache
-
-Set `ENABLE_CACHE=true` + `REDIS_URL` → caches intent classifications and embeddings.
-When Redis is unavailable: **everything still works** — graceful no-op degradation.
+| Hook | Signature | When |
+|------|-----------|------|
+| `@Hooks.before_generation` | `fn(pipeline_result) → pipeline_result` | After pipeline, before LLM |
+| `@Hooks.after_generation` | `fn(response, pipeline_result) → str` | After LLM, before persist |
+| `@Hooks.policy_override` | `fn(features, decision) → decision` | After policy resolve |
+| `@Hooks.before_persist` | `fn(pipeline_result, response_text) → None` | Before DB writes |
 
 ---
 
-## Pipeline Flow
+## File Map
 
 ```
-User message arrives
-       │
-       ▼
-  ┌─ PARALLEL ─────────────────────────────────┐
-  │  1. Embed query (sentence-transformers)     │
-  │  2. Load history (PostgreSQL)               │
-  │  3. Load profile (PostgreSQL)               │
-  └─────────────────────────────────────────────┘
-       │
-       ▼
-  4. Classify intent (pre-heuristics → LLM fallback → cache)
-       │
-       ▼
-  5. Topic gate (continuation: cosine sim < threshold → general)
-       │
-       ▼
-  6. Extract features + BehaviorPolicy.resolve() + Hooks.policy_override()
-       │
-       ▼
-  7. History pruning (recency window + semantic retrieval)
-       │
-       ▼
-  8. Selective retrieval (only what PolicyDecision says)
-       │
-       ▼
-  9. Hooks.before_generation()
-       │
-       ▼
-  10. Generate response (stream or batch via current LLM provider)
-       │
-       ▼
-  11. Hooks.after_generation() → Hooks.before_persist()
-       │
-       ▼
-  12. Background persist (worker.submit → DB writes, profile detection, auto-title)
+backend/
+├── main.py                  # FastAPI app · 12-step pipeline · 24 routes
+├── settings.py              # 56 fields (53 env-overridable)
+├── policy.py                # ★ Deterministic retrieval gating
+├── topic_threading.py       # ★ EMA centroid thread resolution
+├── research_memory.py       # ★ Insight extraction + concept linking
+├── thread_summarizer.py     # Progressive per-thread summarization
+├── conversation_state.py    # ★ Multi-signal state + precision modes
+├── behavior_engine.py       # ★ 8-mode behavioral router
+├── context_manager.py       # Token-budget history trimming
+├── query_db.py              # PostgreSQL + pgvector (50+ functions, 9 tables)
+├── vector_store.py          # Document search (pgvector + numpy fallback)
+├── embeddings.py            # BAAI/bge-base-en-v1.5 · 768-dim · local
+├── hooks.py                 # 4 extension hook points
+├── cache.py                 # Optional Redis (graceful no-op)
+├── worker.py                # Bounded ThreadPoolExecutor
+├── cli.py                   # init · ingest · dev · memory inspect · memory query
+├── DOCS.md                  # Full implementation documentation
+└── llm/
+    ├── providers/           # cerebras · openai · anthropic
+    ├── client.py            # Active-provider wrapper
+    ├── classifier.py        # 5-intent classification
+    ├── prompts.py           # All prompt templates (single source of truth)
+    ├── prompt_orchestrator.py # ★ Policy-aware message assembly
+    ├── generators.py        # Streaming + batch generation
+    └── profile_detector.py  # Personal fact extraction
+
+knowledge/                   # Drop .txt/.md → auto-indexed on startup
+frontend/                    # React 18 · Vite · Tailwind · Vercel AI SDK
+tests/                       # 297 tests · 13 files · pure unit · no DB/LLM calls
 ```
+
+`★` = study these files — each demonstrates a named pattern
 
 ---
 
-## Swapping Components
+## Configuration
 
-| Want to... | Do this |
-|---|---|
-| Change LLM | Set `LLM_PROVIDER` + `LLM_API_KEY` in `.env` |
-| Add LLM provider | Subclass `backend/llm/providers/base.py`, register in `__init__.py` |
-| Change knowledge base | Drop files in `knowledge/`, run `python backend/cli.py ingest` |
-| Modify behavior rules | Edit `backend/policy.py` → `BehaviorPolicy.resolve()` |
-| Add custom logic | Use decorators in `backend/hooks.py` |
-| Change retrieval depth | Set `RETRIEVAL_K`, `QA_K` in `.env` |
-| Change embedding model | Set `EMBEDDING_MODEL` in `.env` |
-| Add caching | Set `ENABLE_CACHE=true`, `REDIS_URL` in `.env` |
-| Remove features | Delete the component — nothing is tightly coupled |
+56 settings in `settings.py`, 53 env-overridable. Key knobs:
 
----
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `LLM_PROVIDER` | `cerebras` | Provider selection |
+| `RETRIEVAL_K` | `4` | Docs per query |
+| `MAX_HISTORY_TOKENS` | `8000` | History budget |
+| `TOPIC_DECAY_ALPHA` | `0.2` | EMA centroid decay rate |
+| `THREAD_ATTACH_THRESHOLD` | `0.55` | Min similarity to join thread |
+| `THREAD_SUMMARY_INTERVAL` | `8` | Summarize every N messages |
+| `RESEARCH_INSIGHTS_ENABLED` | `true` | Background insight extraction |
+| `CONCEPT_LINKING_ENABLED` | `true` | Cross-thread concept linking |
+| `BEHAVIOR_ENGINE_ENABLED` | `true` | Behavioral routing |
 
-## Frontend: AI-Native UI
-
-```
-frontend/src/components/ai/
-  AIIntentBadge.tsx    → Color-coded intent + confidence dot
-  AIStatusBar.tsx      → Horizontal pipeline stage timeline
-  AIRetrievalPanel.tsx → Expandable retrieval breakdown
-  AITokenMeter.tsx     → Context window usage bar
-  AIDebugPanel.tsx     → Raw PolicyDecision JSON (Debug Mode only)
-```
-
-Key features:
-- **Debug Mode** — Toggle from sidebar or header to see raw system decisions
-- **Command Palette** (Ctrl+K) — Quick actions with fuzzy search
-- **Streaming phases** — "Classifying..." → "Retrieving..." → "Generating..."
-- **Sidebar intelligence** — Category icons from conversation titles
-
-**Development:** `cd frontend && npm install && npm run dev`
-**Production:** `npm run build` → served by FastAPI
+Full reference: [`.env.example`](../.env.example) | [`settings.py`](../backend/settings.py)
 
 ---
 
-## Stack
+## Tech Stack
 
 | Layer | Technology |
-|---|---|
+|-------|-----------|
 | LLM | Pluggable: Cerebras, OpenAI, Anthropic (or any via `base_url`) |
-| Embeddings | `BAAI/bge-base-en-v1.5` (768-dim, local, asymmetric retrieval, no API key) |
-| Vector search | PostgreSQL + pgvector (persistent, HNSW index) |
+| Embeddings | BAAI/bge-base-en-v1.5 (768-dim, local, no API key) |
+| Vector Search | PostgreSQL + pgvector (HNSW index) |
 | Database | PostgreSQL 16 + pgvector (single DB for everything) |
 | Backend | FastAPI + Uvicorn (Python 3.12) |
-| Frontend | React 18 + Vite + Tailwind CSS + Vercel AI SDK + Zustand |
-| AI UI | AIMessage, AIStatusBar, AIIntentBadge, AIRetrievalPanel, AIDebugPanel |
-| Streaming | Vercel AI SDK data stream protocol over SSE (with stage events) |
+| Frontend | React 18 + Vite + Tailwind + Vercel AI SDK + Zustand |
+| Streaming | Vercel AI SDK data stream protocol over SSE |
 | Cache | Optional Redis (graceful degradation) |
-| Background | Thread-based worker (zero-dependency) |
-| Context Mgmt | `context_manager.py` (token budgeting, history trimming, LLM summarization) |
-| Config | `settings.py` (env-driven, single source of truth) |
-| Extensions | `hooks.py` (4 decorator-based extension points) |
-| CLI | `python backend/cli.py init/ingest/dev` |
-| Deploy | Docker Compose (single command startup) |
+| Background | ThreadPoolExecutor (bounded, atexit cleanup) |
+| CLI | argparse subcommands: init, ingest, dev, memory inspect, memory query |
+| Deploy | Docker Compose (PostgreSQL + optional Redis + app) |
 
 ---
 
-## Design Principles
+## Quick Start
 
-1. **Opinionated defaults** — Works out of the box. Smart choices so users don't have to.
-2. **Swappable components** — LLM, knowledge base, behavior rules — all replaceable.
-3. **Minimal cognitive load** — Config in one file, hooks in one file, prompts in one file.
-4. **Production-safe** — Connection pooling, graceful degradation, background persistence.
-5. **Extensible without forking** — Hooks let you customize without touching core.
-6. **Observable** — Every pipeline decision is visible in the UI's Debug Mode.
-7. **One database** — PostgreSQL + pgvector for vectors, messages, profiles, documents.
+```bash
+git clone <repo-url> && cd Chatapp
+python backend/cli.py init        # Create knowledge/, copy .env
+# Edit .env → LLM_API_KEY=your-key
+docker compose up postgres -d
+python backend/cli.py dev         # → http://localhost:8000
+```
+
+Or: `docker compose up --build` for everything.
+
+---
+
+## CLI
+
+```bash
+python backend/cli.py init                                # Scaffold project
+python backend/cli.py ingest [DIR]                        # Index knowledge base
+python backend/cli.py dev [--host HOST] [--port PORT]     # Dev server
+python backend/cli.py memory inspect                      # Full cognitive state
+python backend/cli.py memory inspect -c CONVERSATION_ID   # Specific conversation
+python backend/cli.py memory inspect --insights-only      # Just insights
+python backend/cli.py memory query "your search text"     # Cross-thread search
+python backend/cli.py memory query "X" --type decision    # Filter by type
+python backend/cli.py memory query "X" -k 5              # Limit results
+```

@@ -1,8 +1,8 @@
-# ChatGPT vs RAG Chat — Gap Analysis
+# ChatGPT vs LMA (Layered Memory Architecture) — Gap Analysis
 
-> Feature-by-feature comparison between OpenAI's ChatGPT and this self-hosted RAG Chat framework.
+> Feature-by-feature comparison between OpenAI's ChatGPT and this self-hosted LMA reference implementation.
 >
-> **Version 5.0.0** — Last updated with current implementation state.
+> **Version 6.0.0** — Last updated with current implementation state.
 
 ---
 
@@ -16,7 +16,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Core Chat
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Text conversation | ✅ Full | ✅ Full | None | — |
 | Streaming responses | ✅ SSE | ✅ Vercel AI SDK data stream | None | — |
@@ -35,7 +35,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Memory & Personalization
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | User profile / memory | ✅ Automatic extraction | ✅ Automatic extraction via profile_detector | None | — |
 | Explicit "remember this" | ✅ | ✅ Implicit (profile statement detection) | Partial — no explicit "remember" command | Low |
@@ -47,7 +47,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Knowledge & Retrieval
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Knowledge base (custom docs) | ✅ GPTs + file upload | ✅ pgvector + auto-indexing | Different approach — ours is directory-based, no per-chat upload | Medium |
 | Document chunking | ✅ Internal | ✅ Paragraph → sentence → character (chunker.py) | None | — |
@@ -62,7 +62,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Multimodal
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Image understanding (vision) | ✅ GPT-4V | ❌ | **Major gap** | Medium |
 | Image generation (DALL-E) | ✅ | ❌ | **Major gap** | Low |
@@ -72,7 +72,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Code & Tools
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Code interpreter / sandbox | ✅ Runs Python in sandbox | ❌ | **Major gap** — no code execution | Medium |
 | Tool / function calling | ✅ Native tool_use API | ❌ | **Major gap** — no agentic tool use | High |
@@ -82,13 +82,16 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Advanced AI
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Intent classification | ❌ Implicit | ✅ Explicit 5-intent system | We're ahead — deterministic + observable | — |
 | Policy engine | ❌ Prompt-only behavior | ✅ BehaviorPolicy (rules, not prompts) | We're ahead — separates behavior from prompts | — |
 | Pipeline observability | ❌ Black box | ✅ Stage streaming + Debug Mode | We're ahead — real-time pipeline visibility | — |
 | Token budgeting | ❌ Automatic (internal) | ✅ Explicit (context_manager.py) | We're ahead — transparent + configurable | — |
 | Extension hooks | ❌ | ✅ 4 decorator-based hooks | We're ahead — customize without forking | — |
+| Topic threading | ❌ Flat conversation | ✅ EMA centroid-based thread grouping (12 active threads) | We're ahead — conversations self-organize into topical threads | — |
+| Research memory | ❌ No cross-thread insight linking | ✅ LLM-powered insight extraction + concept cross-linking | We're ahead — builds a knowledge graph from conversations | — |
+| Behavioral intelligence | ❌ Implicit | ✅ 8 behavior modes + 5 precision modes + state tracking | We're ahead — adaptive responses based on interaction patterns | — |
 | Provider portability | ❌ OpenAI only | ✅ 3 providers + any OpenAI-compatible | We're ahead — not locked to one vendor | — |
 | Reasoning models (o1/o3) | ✅ | ❌ | Gap — no chain-of-thought mode toggle | Low |
 | GPTs / custom agents | ✅ GPT Store | ❌ | **Major gap** — no agent marketplace | Low |
@@ -96,7 +99,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Deployment & Operations
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Self-hosted | ❌ SaaS only | ✅ Docker Compose | We're ahead — full control over data | — |
 | Single database | N/A | ✅ PostgreSQL for everything | We're ahead — one DB, one backup | — |
@@ -109,7 +112,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ### Frontend / UX
 
-| Feature | ChatGPT | RAG Chat | Gap | Priority |
+| Feature | ChatGPT | LMA | Gap | Priority |
 |---|---|---|---|---|
 | Web app | ✅ Polished | ✅ React 18 + Tailwind | Functional but less polished | Medium |
 | Mobile app | ✅ iOS + Android | ❌ | **Major gap** | Low |
@@ -187,7 +190,7 @@ This system implements a **production-ready subset** of ChatGPT's conversational
 
 ---
 
-## Where RAG Chat Exceeds ChatGPT
+## Where LMA Exceeds ChatGPT
 
 These are architectural advantages that ChatGPT cannot offer:
 
@@ -205,25 +208,25 @@ These are architectural advantages that ChatGPT cannot offer:
 | **Token budget transparency** | Explicit `context_manager.py` with configurable budgets. ChatGPT's context management is opaque. |
 | **Multi-user isolation** | `user_id` field on all operations. Multiple users from a single deployment. |
 | **Progressive summarization** | Explicit ChatGPT-style rolling compression with configurable min_recent and LLM-generated summaries. |
-| **Configurable everything** | ~40 env-var settings control every aspect. No hidden constants. |
+| **Configurable everything** | 53 env-var settings (56 total, 3 hardcoded) control every aspect. No hidden constants. |
 | **Self-hostable** | `docker compose up` — runs on any machine. Air-gapped environments supported. |
 
 ---
 
 ## Implementation Quality Comparison
 
-| Aspect | ChatGPT | RAG Chat |
+| Aspect | ChatGPT | LMA |
 |---|---|---|
-| Codebase | Proprietary | Open source, ~3000 lines Python |
-| Tests | Unknown | 126 unit tests, full mock coverage |
-| Documentation | API docs only | ARCHITECTURE.md + DOCS.md + inline docstrings |
+| Codebase | Proprietary | Open source, ~7200 lines Python |
+| Tests | Unknown | 297 unit tests across 13 files, full mock coverage |
+| Documentation | API docs only | ARCHITECTURE.md + DOCS.md + 8 knowledge files + inline docstrings |
 | Error handling | Opaque | Explicit try/catch, graceful degradation, logged errors |
 | Connection management | Managed | Connection pool with defensive rollback |
 | Background tasks | Managed | Bounded ThreadPoolExecutor + atexit cleanup |
 | Prompt management | Unknown | Single file (prompts.py), no scattered strings |
 | Behavior rules | Prompt-embedded | Separate policy.py with deterministic rules |
 | **Behavioral intelligence** | Implicit (hidden in model weights) | Explicit conversational state tracking (19 fields), 8 behavior modes, 5 personality modes, priority-ordered behavioral routing — fully observable and tunable |
-| **Conversation memory tiers** | Single implicit context | 3 explicit tiers: episodic (user_queries), semantic (user_profile), conversational (conversation_state) |
+| **Conversation memory tiers** | Single implicit context | 4 explicit tiers: episodic (user_queries), semantic (user_profile), conversational (conversation_state), research (research_insights + concept_links) |
 
 ---
 

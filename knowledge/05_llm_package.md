@@ -7,7 +7,7 @@ The llm/ directory is a Python package with these files:
 - client.py — thin wrapper delegating to the active provider
 - providers/ — pluggable LLM provider implementations
 - classifier.py — intent classification with pre-heuristics + LLM fallback
-- prompts.py — ALL prompt templates (single source of truth)
+- prompts.py — ALL prompt templates (single source of truth, 16 constants)
 - prompt_orchestrator.py — builds LLM message lists from pipeline data
 - generators.py — response generation (streaming and batch)
 - profile_detector.py — extracts personal facts from messages
@@ -83,27 +83,44 @@ PROFILE_DETECT_PROMPT: Instructions for extracting personal facts. Output: JSON 
 
 TITLE_PROMPT: Instructions for generating a 3-6 word conversation title from the first message. Return only the title text, no quotes, no punctuation.
 
+BEHAVIOR_STATE_FRAME: Behavioral intelligence context frame injected when behavior_context or meta_instruction is present. Uses {behavior_context} and {meta_instruction} placeholders. Tells the LLM about the user's current conversational state and any specific behavioral instruction.
+
+PERSONALITY_FRAMES: Dict of 5 personality modes (default, concise, detailed, playful, empathetic). Each is a system message fragment that modulates the LLM's response style. Selected by the behavior engine based on conversational state.
+
+PRECISION_FRAMES: Dict of 5 precision modes (concise, analytical, speculative, implementation, adversarial). Each is a system message that adjusts depth and focus. Driven by query analysis in conversation_state.py — e.g., code questions trigger "implementation", hypothetical questions trigger "speculative".
+
+RESPONSE_LENGTH_HINTS: Dict of 3 length hints (brief, normal, detailed). Injected into the system prompt to guide response verbosity. Selected by behavior_engine based on interaction pattern.
+
+INSIGHT_EXTRACTION_PROMPT: Instructions for extracting research insights from conversation. Defines 5 insight types (decision, conclusion, hypothesis, open_question, observation) with confidence scoring. Returns JSON array.
+
+THREAD_CONTEXT_FRAME: Frame for injecting current thread context (summary + label) into prompts. Uses {thread_context} placeholder.
+
+RESEARCH_CONTEXT_FRAME: Frame for injecting related research insights and concepts from other threads. Uses {research_context} placeholder.
+
 ## llm/prompt_orchestrator.py — Message Builder
 
-build_messages(user_query, *, chat_history=None, curated_history=None, rag_context="", profile_context="", similar_qa_context="", privacy_mode=False, greeting_name=None) → list[dict]
+build_messages(user_query, *, chat_history=None, curated_history=None, rag_context="", profile_context="", similar_qa_context="", privacy_mode=False, greeting_name=None, behavior_context=None, meta_instruction=None, personality_mode=None, response_length_hint=None, precision_mode=None, thread_context=None, research_context=None) → list[dict]
 
 Assembles the OpenAI-format messages array in this specific order:
 1. {"role":"system","content":SYSTEM_PROMPT} — always first
-2. {"role":"system","content":GREETING_PERSONALIZATION_FRAME.format(name=greeting_name)} — only if greeting_name is set
-3. {"role":"system","content":PROFILE_CONTEXT_FRAME.format(profile=profile_context)} — only if profile_context is non-empty
-4. {"role":"system","content":RAG_CONTEXT_FRAME.format(context=rag_context)} — only if rag_context is non-empty
-5. {"role":"system","content":PRIVACY_QA_FRAME} — only if privacy_mode=True
-   OR {"role":"system","content":QA_CONTEXT_FRAME.format(qa=similar_qa_context)} — only if similar_qa_context is non-empty and not privacy_mode
-6. All messages from curated_history (or chat_history if no curated) — each is {"role":"user/assistant","content":"..."}
-7. {"role":"user","content":user_query} — the current message, always last
+2. {"role":"system","content":GREETING_PERSONALIZATION_FRAME.format(name=greeting_name)} — only if greeting_name
+3. {"role":"system","content":BEHAVIOR_STATE_FRAME + personality frame + precision frame + length hint} — only if behavior_context or meta_instruction present
+4. {"role":"system","content":THREAD_CONTEXT_FRAME.format(...)} — only if thread_context present
+5. {"role":"system","content":RESEARCH_CONTEXT_FRAME.format(...)} — only if research_context present
+6. {"role":"system","content":PROFILE_CONTEXT_FRAME.format(profile=profile_context)} — only if profile_context
+7. {"role":"system","content":RAG_CONTEXT_FRAME.format(context=rag_context)} — only if rag_context
+8. {"role":"system","content":PRIVACY_QA_FRAME} — if privacy_mode=True
+   OR {"role":"system","content":QA_CONTEXT_FRAME.format(qa=similar_qa_context)} — if QA context and not privacy
+9. History messages (curated or raw, token-budget-enforced)
+10. {"role":"user","content":user_query} — always last
 
 ## llm/generators.py — Response Generation
 
-generate_response(...) → str: Calls build_messages() then completion(). On exception, returns a user-friendly error string.
+generate_response(...) → str: Calls build_messages() with all pipeline data (including behavior_context, meta_instruction, personality_mode, response_length_hint, precision_mode, thread_context, research_context) then completion(). On exception, returns a user-friendly error string.
 
-generate_response_stream(...) → Generator[str]: Calls build_messages() then stream_text_deltas(). Yields formatted SSE lines: "0:\"token\"" for each delta, then "e:{...}" and "d:{...}" finish events. On exception, yields an error delta and error finish events.
+generate_response_stream(...) → Generator[str]: Same parameters. Calls build_messages() then stream_text_deltas(). Yields formatted SSE lines: "0:\"token\"" for each delta, then "e:{...}" and "d:{...}" finish events.
 
-generate_title(user_message) → str: Builds a minimal messages array with TITLE_PROMPT + user message, calls completion() with temperature=0.5 and MAX_TITLE_TOKENS=20. Returns the cleaned title (max 50 chars, stripping quotes). On exception, returns the first 5 words of the message.
+generate_title(user_message) → str: Minimal messages array with TITLE_PROMPT + user message, calls completion() with temperature=0.5 and MAX_TITLE_TOKENS=20. Returns cleaned title (max 50 chars). On exception, returns first 5 words.
 
 ## llm/profile_detector.py — Profile Extraction
 

@@ -63,6 +63,12 @@ Optional tuning:
 - MAX_RESPONSE_TOKENS — max tokens per response (default 2048)
 - ENABLE_CACHE — set to "true" for Redis caching
 - REDIS_URL — Redis connection URL if ENABLE_CACHE=true
+- BEHAVIOR_ENGINE_ENABLED — enable behavioral intelligence (default true)
+- BEHAVIOR_REPETITION_THRESHOLD — repetition detection sensitivity (default 0.7)
+- THREAD_ENABLED — enable topic threading (default true)
+- THREAD_ATTACH_THRESHOLD — thread grouping sensitivity (default 0.55)
+- RESEARCH_INSIGHTS_ENABLED — enable LLM insight extraction (default true)
+- CONCEPT_LINKING_ENABLED — enable concept cross-linking (default true)
 
 ## Swapping the LLM Provider
 
@@ -103,6 +109,16 @@ To add a new intent category: add it to VALID_INTENTS in llm/classifier.py, add 
 
 To add custom logic without editing core files: use Hooks in hooks.py (see the Policy Engine & Extension Hooks document for details).
 
+To customize behavioral intelligence: modify BehaviorEngine.evaluate() priority ordering or thresholds in behavior_engine.py. Add new behavior modes by adding detection logic and corresponding BehaviorDecision overrides.
+
+To inspect memory state from the command line:
+```
+python backend/cli.py memory inspect                        # all conversations
+python backend/cli.py memory inspect --conversation <CID>   # single conversation
+python backend/cli.py memory query "topic text" --k 5        # semantic insight search
+python backend/cli.py memory query "topic" --type decision   # filter by type
+```
+
 ## Frontend Development
 
 Start React dev server (with hot reload and proxy to backend):
@@ -128,7 +144,7 @@ The profile is a flat key-value store. Keys are snake_case strings like "name", 
 
 ## Health Monitoring
 
-GET /health returns: status ("ok"), database ("connected" or "unavailable"), documents (chunk count), llm_provider (active provider name), version ("4.0.0"). Use this endpoint for:
+GET /health returns: status ("ok"), database ("connected" or "unavailable"), documents (chunk count), llm_provider (active provider name), version ("6.0.0"). Use this endpoint for:
 - Load balancer health checks
 - Docker Compose healthcheck
 - Monitoring dashboards

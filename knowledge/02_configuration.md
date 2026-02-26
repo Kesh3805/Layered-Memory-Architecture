@@ -2,8 +2,7 @@
 
 ## Overview
 
-All configuration lives in settings.py as a frozen dataclass. Import it from anywhere:
-`from settings import settings`
+All configuration lives in settings.py as a frozen dataclass (56 total settings, 53 env-overridable, 3 hardcoded constants). Import from anywhere: `from settings import settings`.
 
 Settings are read from environment variables at startup via python-dotenv. All values are immutable after startup. To change a setting, update .env and restart. No defaults are scattered across files — one file, one source of truth.
 
@@ -11,102 +10,124 @@ Settings are read from environment variables at startup via python-dotenv. All v
 
 **LLM_PROVIDER** (default: "cerebras") — Which LLM provider to use. Supported values: "cerebras", "openai", "anthropic". The provider module is lazily imported, so only the selected provider's SDK needs to be installed.
 
-**LLM_API_KEY** (default: "") — API key for the selected provider. Also checks CEREBRAS_API_KEY as a legacy fallback for backward compatibility with older .env files.
+**LLM_API_KEY** (default: "") — API key for the selected provider. Also checks CEREBRAS_API_KEY as a legacy fallback for backward compatibility.
 
-**LLM_MODEL** (default: "") — Model name override. When empty, each provider uses its own default model. Cerebras default: gpt-oss-120b. OpenAI default: gpt-4o. Anthropic default: claude-sonnet-4-20250514.
+**LLM_MODEL** (default: "") — Model name override. When empty, each provider uses its own default model. Cerebras: gpt-oss-120b. OpenAI: gpt-4o. Anthropic: claude-sonnet-4-20250514.
 
 **LLM_BASE_URL** (default: "") — Optional API endpoint override. Useful for Azure OpenAI, vLLM, Ollama, or any OpenAI-compatible server. Only used by the OpenAI provider.
 
 ## Token Budget Settings
 
-**MAX_RESPONSE_TOKENS** (default: 2048) — Maximum tokens in a generated response. Passed to the LLM as max_tokens.
+**MAX_RESPONSE_TOKENS** (default: 2048) — Maximum tokens in a generated response.
 
-**MAX_CLASSIFIER_TOKENS** (hardcoded: 50) — Maximum tokens for the intent classification LLM call. Classification returns a short JSON object so 50 is always sufficient.
+**MAX_CONTEXT_WINDOW** (default: 65536) — Total context window size for the model. Used by the frontend AITokenMeter component.
 
-**MAX_PROFILE_DETECT_TOKENS** (hardcoded: 300) — Maximum tokens for the profile detection LLM call. Returns a JSON array so 300 is sufficient.
+**MAX_HISTORY_TOKENS** (default: 8000) — Token budget reserved for conversation history. Overflow is trimmed or summarized.
 
-**MAX_TITLE_TOKENS** (hardcoded: 20) — Maximum tokens for auto-generating conversation titles. Titles are 3-6 words so 20 is always sufficient.
+**MAX_CLASSIFIER_TOKENS** (hardcoded: 50) — Maximum tokens for intent classification LLM call. Not env-overridable.
 
-**MAX_CONTEXT_WINDOW** (default: 65536) — Total context window size for the model. Used by the frontend AITokenMeter component to display context usage percentage.
+**MAX_PROFILE_DETECT_TOKENS** (hardcoded: 300) — Maximum tokens for profile detection LLM call. Not env-overridable.
 
-**MAX_HISTORY_TOKENS** (default: 8000) — Token budget reserved for conversation history. History exceeding this limit is trimmed from the oldest end (or summarized when ENABLE_HISTORY_SUMMARIZATION=True) before being passed to the LLM. Enforced in prompt_orchestrator.py via context_manager.fit_messages_to_budget().
+**MAX_TITLE_TOKENS** (hardcoded: 20) — Maximum tokens for auto-generating conversation titles. Not env-overridable.
 
-**ENABLE_HISTORY_SUMMARIZATION** (default: False) — When True, overflow turns are compressed into an LLM-generated system message instead of being silently dropped. Costs one extra LLM call per overflowing request. Set to True for long-session applications where conversation history is important.
+**ENABLE_HISTORY_SUMMARIZATION** (default: True) — When True, overflow turns are compressed into an LLM-generated summary instead of being silently dropped. Costs one extra LLM call per overflowing request.
 
 ## Embedding Settings
 
-**EMBEDDING_MODEL** (default: "BAAI/bge-base-en-v1.5") — The sentence-transformers model for generating embeddings. Runs entirely locally; no API key required. Downloaded on first startup (~440 MB) and cached. Alternatives: BAAI/bge-small-en-v1.5 (384-dim, 133 MB, faster), BAAI/bge-large-en-v1.5 (1024-dim, 1.3 GB, highest quality), sentence-transformers/all-mpnet-base-v2 (768-dim, 420 MB, no prefix needed).
+**EMBEDDING_MODEL** (default: "BAAI/bge-base-en-v1.5") — Local sentence-transformers model. 768 dimensions. ~440 MB download on first use. No API key required.
 
-**EMBEDDING_DIMENSION** (default: 768) — Vector dimension. Must match the model. All pgvector columns use vector(EMBEDDING_DIMENSION). Changing this on an existing database requires dropping and recreating the vector columns (CREATE TABLE IF NOT EXISTS won't change existing column types).
+**EMBEDDING_DIM** (default: 768) — Vector dimension. Must match the model. All pgvector columns use vector(EMBEDDING_DIM). Changing requires dropping and recreating vector columns.
 
-**QUERY_INSTRUCTION** (default: "") — Optional prefix applied to queries at retrieval time via get_query_embedding(). Leave empty for bge-v1.5 (works without prefix). For maximum recall, set to "Represent this sentence for searching relevant passages: ". Documents are always encoded without any prefix.
+**QUERY_INSTRUCTION** (default: "Represent this sentence for searching relevant passages:") — Prefix applied to queries at retrieval time via get_query_embedding(). Documents encoded without prefix (asymmetric retrieval).
 
 ## Retrieval Settings
 
-**RETRIEVAL_K** (default: 4) — Number of document chunks to retrieve from pgvector for knowledge_base queries. Higher values inject more context but increase token usage.
+**RETRIEVAL_K** (default: 4) — Number of document chunks to retrieve for knowledge_base queries.
 
-**QA_K** (default: 4) — Number of similar past Q&A pairs to retrieve from user_queries table. Used for cross-conversation continuity on knowledge_base and continuation intents.
+**QA_K** (default: 4) — Number of similar past Q&A pairs to retrieve.
 
-**QA_MIN_SIMILARITY** (default: 0.65) — Minimum cosine similarity score for a Q&A pair to be included in QA context. Pairs below this threshold are excluded. Range: 0.0-1.0.
+**SIMILARITY_THRESHOLD** (default: 0.3) — Minimum cosine similarity for knowledge base document results.
 
-## Pipeline Thresholds
+## Continuity Settings
 
-**TOPIC_CONTINUATION_THRESHOLD** (default: 0.35) — Minimum cosine similarity required to keep the "continuation" intent. If the query embedding is less similar than this to the conversation's rolling topic vector, the intent is downgraded to "general". Lower values are more permissive (allow more topic drift while still treating as continuation).
+**TOPIC_CONTINUATION_THRESHOLD** (default: 0.35) — Minimum cosine similarity to keep "continuation" intent. Below this, demoted to "general".
 
-**TOPIC_DECAY_ALPHA** (default: 0.2) — Exponential decay rate for the rolling topic vector update. At 0.2, new messages have 20% influence on the topic direction, older messages have 80% influence. Higher alpha makes the topic vector respond faster to topic changes.
+**TOPIC_DECAY_ALPHA** (default: 0.2) — Exponential decay rate for rolling topic vector. At 0.2, new messages have 20% influence, old have 80%.
 
-**RECENCY_WINDOW** (default: 6) — Number of most recent messages to always include in curated history. Combined with semantic history to form the full context window for continuation and knowledge_base intents.
+**RECENCY_WINDOW** (default: 6) — Number of recent messages always included in curated history.
 
-**SEMANTIC_K** (default: 3) — Maximum number of semantically similar older messages to add to curated history beyond the recency window. Only used when conversation has more messages than RECENCY_WINDOW.
-
-**SIMILARITY_THRESHOLD** (default: 0.65) — Minimum similarity for semantic history retrieval. Messages below this threshold are excluded from semantic history expansion.
+**SEMANTIC_K** (default: 3) — Maximum semantic history messages beyond recency window.
 
 ## Knowledge Base Settings
 
-**KNOWLEDGE_DIR** (default: "knowledge") — Path to the directory containing knowledge base files. Supports .txt and .md files. All files in this directory are ingested on startup if the document_chunks table is empty, or when FORCE_REINDEX=true.
+**KNOWLEDGE_DIR** (default: "knowledge") — Path to knowledge base files. Supports .txt and .md.
 
-**CHUNK_SIZE** (default: 500) — Maximum character length of each document chunk. Chunks are created by sliding window over the text.
+**CHUNK_SIZE** (default: 500) — Maximum character length per document chunk.
 
-**CHUNK_OVERLAP** (default: 50) — Number of characters to overlap between consecutive chunks. A chunk at position i has characters [i, i+CHUNK_SIZE], and the next chunk starts at [i+CHUNK_SIZE-CHUNK_OVERLAP].
+**CHUNK_OVERLAP** (default: 50) — Overlap characters between consecutive chunks.
 
-**FORCE_REINDEX** (default: false) — When true, clears and rebuilds the document_chunks table on every startup. Useful during development when knowledge base content changes frequently. Set to false in production.
+**FORCE_REINDEX** (default: false) — When true, clears and rebuilds document_chunks on every startup.
 
 ## Database Settings
 
-**DATABASE_URL** (default: "") — Full PostgreSQL connection string in format postgresql://user:password@host:port/database. When set, overrides all individual POSTGRES_* settings below.
+**DATABASE_URL** (default: "") — Full PostgreSQL connection string. Overrides individual POSTGRES_* settings.
 
-**POSTGRES_HOST** (default: "localhost") — PostgreSQL host. Only used if DATABASE_URL is not set.
+**POSTGRES_HOST** (default: "localhost"), **POSTGRES_PORT** (default: 55432), **POSTGRES_DB** (default: "chatapp"), **POSTGRES_USER** (default: "root"), **POSTGRES_PASSWORD** (default: "password") — Individual connection settings, used when DATABASE_URL is empty.
 
-**POSTGRES_PORT** (default: 55432) — PostgreSQL port. Default is 55432 (not standard 5432) to avoid conflicts with system PostgreSQL installations.
+**DB_POOL_MIN** (default: 2) — Minimum connections in psycopg2 SimpleConnectionPool.
 
-**POSTGRES_DB** (default: "chatapp") — Database name.
-
-**POSTGRES_USER** (default: "root") — Database user.
-
-**POSTGRES_PASSWORD** (default: "password") — Database password.
-
-**DB_POOL_MIN** (default: 1) — Minimum connections in the psycopg2 SimpleConnectionPool.
-
-**DB_POOL_MAX** (default: 10) — Maximum connections in the SimpleConnectionPool.
+**DB_POOL_MAX** (default: 10) — Maximum connections.
 
 ## Cache Settings
 
-**ENABLE_CACHE** (default: false) — Set to true to enable Redis caching for intent classifications and embeddings. When false, all cache operations are no-ops. Redis is completely optional.
+**ENABLE_CACHE** (default: false) — Enable Redis caching. When false, all cache operations are no-ops.
 
-**REDIS_URL** (default: "redis://localhost:6379/0") — Redis connection URL. Only used when ENABLE_CACHE=true.
+**REDIS_URL** (default: "redis://localhost:6379/0") — Redis connection URL.
 
-**CACHE_TTL** (default: 3600) — Default cache TTL in seconds (1 hour). Intent classifications use a shorter 1800-second TTL (30 minutes) hardcoded in cache.py.
+**CACHE_TTL** (default: 3600) — Default cache TTL in seconds. Intent classifications use 1800s (30 min).
+
+## Pipeline Settings
+
+**DEFAULT_USER_ID** (default: "default") — User ID used when none is provided in requests.
+
+**HISTORY_FETCH_LIMIT** (default: 50) — Maximum messages loaded from DB for pipeline history.
+
+## Behavior Engine Settings (v6.0.0)
+
+**BEHAVIOR_ENGINE_ENABLED** (default: true) — Enable the behavioral intelligence layer. When false, all behavior modes are skipped and standard mode is used.
+
+**BEHAVIOR_REPETITION_THRESHOLD** (default: 0.7) — Jaccard word-overlap threshold for detecting user repetition. Messages with overlap ≥ 0.7 trigger repetition_aware mode.
+
+**BEHAVIOR_PATTERN_WINDOW** (default: 10) — Number of recent messages to consider for interaction pattern detection (rapid_fire vs exploratory vs deep_dive vs standard).
+
+**BEHAVIOR_STATE_PERSIST** (default: true) — Persist conversation state to database. When false, state is in-memory only (lost on restart).
+
+## Research Engine Settings (v6.0.0)
+
+**THREAD_ENABLED** (default: true) — Enable topic threading. When false, messages are not grouped into threads.
+
+**THREAD_ATTACH_THRESHOLD** (default: 0.55) — Minimum cosine similarity between query embedding and thread centroid to attach the message to an existing thread. Below this, a new thread is created.
+
+**THREAD_SUMMARY_INTERVAL** (default: 8) — Summarize threads at milestone intervals (8, 16, 24... messages). Costs one LLM call per summary.
+
+**THREAD_MAX_ACTIVE** (default: 12) — Maximum active threads per conversation. Prevents unbounded thread growth.
+
+**RESEARCH_INSIGHTS_ENABLED** (default: true) — Enable LLM-powered insight extraction after each response. Types: decision, conclusion, hypothesis, open_question, observation.
+
+**RESEARCH_INSIGHT_MIN_CONFIDENCE** (default: 0.6) — Minimum confidence score for storing an extracted insight. Below this threshold, insights are discarded.
+
+**CONCEPT_LINKING_ENABLED** (default: true) — Enable heuristic concept extraction and cross-linking. No LLM call — uses regex patterns for capitalized nouns, snake_case/camelCase terms, quoted terms, acronyms.
+
+**CONCEPT_LINK_K** (default: 5) — Maximum concept links returned per semantic search query.
 
 ## Server Settings
 
-**HOST** (default: "0.0.0.0") — Server bind address. Used by cli.py dev command.
+**HOST** (default: "0.0.0.0") — Server bind address.
 
-**PORT** (default: 8000) — Server port. Used by cli.py dev command.
+**PORT** (default: 8000) — Server port.
 
-**DEBUG_MODE** (default: false) — Enable verbose logging. Does not affect the frontend's Debug Mode toggle (that is client-side state).
-
-**STAGE_STREAMING** (default: true) — Whether to emit pipeline stage events (classified, retrieved, generating) before text tokens in the stream. Set to false to skip stage events and get pure token streaming.
+**ALLOWED_ORIGINS** (default: "*") — CORS allowed origins.
 
 ## How Settings Are Loaded
 
-The Settings dataclass is instantiated once as a module-level singleton: `settings = Settings()`. The dataclass is frozen (immutable), so no code can accidentally mutate settings at runtime. The dotenv load_dotenv() call at the top of settings.py reads .env before the dataclass is constructed, so environment variables in .env are available to the default value expressions.
+The Settings dataclass is instantiated once as a module-level singleton: `settings = Settings()`. The dataclass is frozen (immutable). load_dotenv() reads .env before the dataclass is constructed. The three hardcoded constants (MAX_CLASSIFIER_TOKENS, MAX_PROFILE_DETECT_TOKENS, MAX_TITLE_TOKENS) use simple `int = N` assignments rather than `_env_int()` calls, making them not overridable via environment variables.

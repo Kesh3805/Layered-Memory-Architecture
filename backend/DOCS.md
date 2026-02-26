@@ -73,20 +73,22 @@ Chatapp/
 │   │       ├── cerebras.py         # Cerebras Cloud SDK
 │   │       ├── openai.py           # OpenAI (also Azure, vLLM, Ollama via base_url)
 │   │       └── anthropic.py        # Anthropic Messages API
-│   └── tests/                      # 254 unit tests
+│   └── tests/                      # 297 unit tests across 13 files
 │       ├── conftest.py             # sys.path setup for flat imports
 │       ├── __init__.py
-│       ├── test_chunker.py         # 27 tests — chunk_text edge cases
-│       ├── test_classifier.py      # Intent classification with mocked LLM
-│       ├── test_context_manager.py # Token budgeting + summarization
-│       ├── test_policy.py          # BehaviorPolicy rule coverage + structural follow-up
-│       ├── test_prompt_orchestrator.py # Message assembly + precision modes + thread/research context
-│       ├── test_settings.py        # Config defaults + env overrides + research settings
-│       ├── test_conversation_state.py # Conversation state + precision mode computation
-│       ├── test_behavior_engine.py # Behavioral routing engine (24 tests)
-│       ├── test_topic_threading.py # EMA centroid math + cosine similarity + thread resolution
-│       ├── test_research_memory.py # Concept extraction + insight JSON parsing
-│       └── test_thread_summarizer.py # Thread summarization + labeling + interval logic
+│       ├── test_chunker.py         # 11 tests — chunk_text edge cases
+│       ├── test_classifier.py      # 44 tests — pre-heuristics, LLM fallback, cache, unknown intents
+│       ├── test_cli.py             # 30 tests — init, ingest, dev, memory inspect/query commands
+│       ├── test_context_manager.py # 21 tests — token budgeting + summarization
+│       ├── test_conversation_state.py # 37 tests — state tracking + precision mode computation
+│       ├── test_behavior_engine.py # 19 tests — all 8 behavior modes + precision_mode
+│       ├── test_insights_search.py # 13 tests — cross-thread insight search + filters
+│       ├── test_policy.py          # 28 tests — all 5 intents + overlays + structural follow-up
+│       ├── test_prompt_orchestrator.py # 24 tests — message assembly + precision + thread/research
+│       ├── test_research_memory.py # 19 tests — concept extraction + insight JSON parsing
+│       ├── test_settings.py        # 22 tests — defaults + env overrides + research settings
+│       ├── test_thread_summarizer.py # 18 tests — summarization + labeling + interval logic
+│       └── test_topic_threading.py # 11 tests — EMA centroid math + cosine similarity
 ├── frontend/                       # React 18 + Vite + Tailwind + AI SDK
 │   └── src/
 │       ├── components/ai/          # AI-native observability primitives
@@ -163,7 +165,7 @@ Chatapp/
 |---|---|---|
 | **LLM** | `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` | `cerebras`, `""`, `""`, `""` |
 | **Token Budgets** | `MAX_CONTEXT_WINDOW`, `MAX_RESPONSE_TOKENS`, `MAX_HISTORY_TOKENS` | 65536, 2048, 8000 |
-| **Classifier Tokens** | `MAX_CLASSIFIER_TOKENS`, `MAX_PROFILE_DETECT_TOKENS`, `MAX_TITLE_TOKENS` | 60, 200, 30 |
+| **Classifier Tokens** | `MAX_CLASSIFIER_TOKENS`, `MAX_PROFILE_DETECT_TOKENS`, `MAX_TITLE_TOKENS` | 50, 300, 20 (hardcoded, not env-overridable) |
 | **Embedding** | `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `QUERY_INSTRUCTION` | `BAAI/bge-base-en-v1.5`, 768, `"Represent this sentence..."` |
 | **Retrieval** | `RETRIEVAL_K`, `QA_K`, `SIMILARITY_THRESHOLD` | 4, 4, 0.3 |
 | **Continuity** | `TOPIC_CONTINUATION_THRESHOLD`, `RECENCY_WINDOW`, `SEMANTIC_K` | 0.35, 6, 3 |
@@ -280,10 +282,14 @@ Intent-based rules:
 | `user_queries` | Per-query embeddings | `id`, `conversation_id`, `query_text`, `ai_response`, `embedding` (768-dim vector), `tags[]`, `timestamp` |
 | `user_profile` | Key-value personal data | `id`, `user_id`, `key`, `value`, `category`, `updated_at` |
 | `document_chunks` | Knowledge base vectors | `id`, `content`, `embedding` (768-dim vector), `source`, `created_at` |
+| `conversation_state` | Per-convo behavioral state | `conversation_id`, `state_data` (JSONB), `updated_at` |
+| `conversation_threads` | Topic threads | `id`, `conversation_id`, `centroid_embedding`, `message_ids[]`, `message_count`, `summary`, `label` |
+| `research_insights` | Extracted insights | `id`, `conversation_id`, `thread_id`, `insight_type`, `insight_text`, `embedding`, `confidence_score` |
+| `concept_links` | Cross-thread concept links | `id`, `concept`, `embedding`, `source_type`, `source_id`, `conversation_id`, `thread_id` |
 
 **All vector columns use pgvector's `vector(768)` type with HNSW indexing.**
 
-**Public functions (31 total):**
+**Public functions (52 total):**
 
 *Schema:*
 - `init_db()` → Create all tables + extensions + indexes (autocommit mode for safe DDL)
@@ -291,31 +297,35 @@ Intent-based rules:
 *Connections:*
 - `get_connection()`, `put_connection(conn)`
 
-*Conversations (8):*
+*Conversations (10):*
 - `create_conversation(title, user_id, tags)` → UUID
-- `get_all_conversations(user_id)` → list[dict]
+- `list_conversations(limit)` → list[dict]
+- `get_conversation(cid)` → dict | None
 - `get_conversation_messages(cid, limit)` → list[dict]
 - `get_recent_chat_messages(cid, limit)` → list[dict] (for pipeline)
 - `rename_conversation(cid, title)` → bool
 - `delete_conversation(cid)` → bool
-- `search_conversations(user_id, query, limit)` → list[dict] (ILIKE search)
-- `export_conversation(cid, format)` → dict (JSON/text export)
+- `search_conversations(query, limit)` → list[dict] (ILIKE search)
+- `export_conversation(cid)` → dict (JSON export)
+- `touch_conversation(cid)` → update `updated_at` timestamp
+- `increment_message_count(cid, amount)` → bool
 
-*Messages (2):*
-- `save_chat_message(cid, role, content)` → id
+*Messages (4):*
+- `store_chat_message(role, content, cid)` → id
+- `get_first_user_message(cid)` → dict | None
 - `delete_last_assistant_message(cid)` → bool (for regenerate)
+- `get_similar_messages_in_conversation(embedding, cid, k, min_sim)` → list
 
 *Queries / Q&A (4):*
-- `save_user_query(cid, query, response, embedding, tags)` → id
-- `search_similar_queries(embedding, k, min_similarity)` → list (cross-conversation)
-- `search_same_conversation_qa(cid, embedding, k, min_similarity)` → list
+- `store_query(query_text, embedding, response, cid, tags)` → id
+- `retrieve_similar_queries(embedding, k, cid, min_similarity)` → list (cross-conversation)
+- `retrieve_same_conversation_queries(embedding, cid, k, min_similarity)` → list
 - `infer_tags(query)` → list[str]
 
-*Profile (4):*
+*Profile (3):*
 - `get_user_profile(user_id)` → list[dict]
 - `update_profile_entry(key, value, category, user_id)` → id (UPSERT)
 - `delete_profile_entry(entry_id)` → bool
-- `batch_update_profile(entries, user_id)` → int
 
 *Document chunks (4):*
 - `store_document_chunks(chunks, source)` → int
@@ -325,7 +335,36 @@ Intent-based rules:
 
 *Topic vectors (2):*
 - `get_topic_vector(cid)` → ndarray | None
-- `update_topic_vector(cid, new_embedding)` → exp. moving avg (α=0.3)
+- `update_topic_vector(cid, new_embedding, alpha)` → EMA blend (default α read from `TOPIC_DECAY_ALPHA`=0.2)
+
+*Conversation State (3):*
+- `get_conversation_state(cid)` → dict | None
+- `save_conversation_state(cid, state_data)` → bool
+- `delete_conversation_state(cid)` → bool
+
+*Threads (8):*
+- `create_thread(thread_id, cid, centroid_embedding, message_ids, label)` → bool
+- `get_threads(cid)` → list[dict]
+- `get_thread(thread_id)` → dict | None
+- `update_thread_centroid(thread_id, centroid_embedding, message_id)` → bool
+- `update_thread_summary(thread_id, summary)` → bool
+- `update_thread_label(thread_id, label)` → bool
+- `find_nearest_thread(cid, embedding, threshold)` → dict | None
+- `count_threads(cid)` → int
+- `delete_threads_for_conversation(cid)` → bool
+
+*Research Insights (5):*
+- `create_insight(cid, thread_id, insight_type, insight_text, embedding, confidence, source_msg_id)` → id
+- `get_insights(cid, limit)` → list[dict]
+- `get_insights_for_thread(thread_id, limit)` → list[dict]
+- `search_similar_insights(embedding, k, cid, insight_type)` → list[dict]
+- `delete_insights_for_conversation(cid)` → bool
+
+*Concept Links (4):*
+- `create_concept_link(concept, embedding, source_type, source_id, cid, thread_id)` → id
+- `get_concepts_for_conversation(cid)` → list[dict]
+- `search_similar_concepts(embedding, k, cid)` → list[dict]
+- `delete_concepts_for_conversation(cid)` → bool
 
 ---
 
@@ -438,15 +477,26 @@ def force_rag_for_questions(features, decision):
 
 ### cli.py — Command Line Interface
 
-**Purpose:** Three commands for project management.
+**Purpose:** Five commands for project management and memory inspection.
 
 | Command | Function | Purpose |
 |---|---|---|
 | `python backend/cli.py init` | `cmd_init` | Create `knowledge/` dir, copy `.env.example` → `.env` |
 | `python backend/cli.py ingest [DIR]` | `cmd_ingest` | Index knowledge base files into pgvector |
 | `python backend/cli.py dev [--host] [--port]` | `cmd_dev` | Start uvicorn dev server with hot-reload |
+| `python backend/cli.py memory inspect [--conversation CID] [--insights-only]` | `cmd_memory` → `_cmd_memory_inspect` | Print full cognitive state: threads, insights, concepts for all or one conversation |
+| `python backend/cli.py memory query <text> [--k N] [--type TYPE]` | `cmd_memory` → `_cmd_memory_query` | Semantic search across research insights with optional type filter |
 
 `cmd_dev` sets `cwd=backend/` so flat module imports work correctly.
+
+**Memory inspect output:**
+- Iterates conversations, prints threads with labels, message counts, summaries
+- For each thread: lists insights (type, text, confidence) and concept links
+- `--insights-only` flag skips thread details, prints all insights directly
+
+**Memory query output:**
+- Embeds the query text, searches `research_insights` via pgvector
+- Prints matching insights ranked by similarity with type, confidence, and source thread
 
 ---
 
@@ -794,7 +844,7 @@ User message arrives
       ├── save_chat_message (user + assistant)
       ├── save_user_query (with embedding)
       ├── detect_profile_updates → batch_update_profile
-      ├── update_topic_vector (exponential moving average, α=0.3)
+      ├── update_topic_vector (exponential moving average, α=0.2 via TOPIC_DECAY_ALPHA)
       ├── generate_title (if first message in conversation)
       ├── extract_insights (LLM-powered → research_insights table)
       ├── link_concepts (heuristic extraction → concept_links table)
@@ -894,6 +944,7 @@ d:{"finishReason":"stop"}
 | `GET` | `/conversations/{id}/insights` | List research insights for a conversation |
 | `GET` | `/conversations/{id}/concepts` | List concept links for a conversation |
 | `GET` | `/concepts/search?q=...&conversation_id=...` | Semantic search for related concepts |
+| `GET` | `/insights/search?q=...&k=10&type=...&conversation_id=...` | Cross-thread semantic search over extracted insights (filter by type + conversation) |
 
 ---
 
@@ -1021,9 +1072,10 @@ LLM_BASE_URL=                            # for vLLM, Azure, Ollama
 MAX_CONTEXT_WINDOW=65536
 MAX_RESPONSE_TOKENS=2048
 MAX_HISTORY_TOKENS=8000
-MAX_CLASSIFIER_TOKENS=60
-MAX_PROFILE_DETECT_TOKENS=200
-MAX_TITLE_TOKENS=30
+# The following three are hardcoded in settings.py (not env-overridable):
+# MAX_CLASSIFIER_TOKENS=50
+# MAX_PROFILE_DETECT_TOKENS=300
+# MAX_TITLE_TOKENS=20
 
 # ── Embedding ─────────────────────────────────────────────
 EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
@@ -1087,21 +1139,23 @@ ALLOWED_ORIGINS=*
 
 ## Test Suite
 
-**254 tests** across 11 test files in `backend/tests/`:
+**297 tests** across 13 test files in `backend/tests/`:
 
 | File | Tests | Coverage |
 |---|---|---|
-| `test_chunker.py` | 27 | Chunk splitting: paragraphs, sentences, characters, overlap, edge cases, empty input |
-| `test_classifier.py` | ~25 | Pre-heuristic paths (greeting, profile, privacy, continuation), LLM fallback, cache hit, unknown intents |
-| `test_context_manager.py` | ~20 | Token estimation, budget fitting, progressive summarization, edge cases |
-| `test_policy.py` | ~38 | All 5 intents, cross-intent overlays, greeting detection, personal ref signals, structural follow-up score |
-| `test_prompt_orchestrator.py` | ~26 | Message ordering, frame injection, precision modes, thread context, research context, privacy suppression |
-| `test_settings.py` | ~16 | Defaults, env overrides, bool parsing, immutability, behavior + research engine settings |
-| `test_conversation_state.py` | ~36 | State tracking: tone detection, repetition, testing, meta, patterns, precision mode computation |
-| `test_behavior_engine.py` | ~25 | All 8 behavior modes, priority ordering, retrieval modulation, precision_mode field |
+| `test_chunker.py` | 11 | Chunk splitting: paragraphs, sentences, characters, overlap, edge cases, empty input |
+| `test_classifier.py` | 44 | Pre-heuristic paths (greeting, profile, privacy, continuation), LLM fallback, cache hit, unknown intents |
+| `test_cli.py` | 30 | CLI commands: init, ingest, dev, memory inspect, memory query + argument parsing |
+| `test_context_manager.py` | 21 | Token estimation, budget fitting, progressive summarization, edge cases |
+| `test_conversation_state.py` | 37 | State tracking: tone detection, repetition, testing, meta, patterns, precision mode computation |
+| `test_behavior_engine.py` | 19 | All 8 behavior modes, priority ordering, retrieval modulation, precision_mode field |
+| `test_insights_search.py` | 13 | Cross-thread insight search, type filter, conversation_id scope, error handling |
+| `test_policy.py` | 28 | All 5 intents, cross-intent overlays, greeting detection, personal ref signals, structural follow-up score |
+| `test_prompt_orchestrator.py` | 24 | Message ordering, frame injection, precision modes, thread context, research context, privacy suppression |
+| `test_research_memory.py` | 19 | Concept extraction heuristics, insight JSON parsing, INSIGHT_TYPES validation |
+| `test_settings.py` | 22 | Defaults, env overrides, bool parsing, immutability, behavior + research engine settings |
+| `test_thread_summarizer.py` | 18 | Thread summarization, label generation, interval-based maybe_summarize logic |
 | `test_topic_threading.py` | 11 | EMA centroid math, cosine similarity, ThreadResolution dataclass |
-| `test_research_memory.py` | ~18 | Concept extraction heuristics, insight JSON parsing, INSIGHT_TYPES validation |
-| `test_thread_summarizer.py` | ~15 | Thread summarization, label generation, interval-based maybe_summarize logic |
 
 **Running tests:**
 ```bash

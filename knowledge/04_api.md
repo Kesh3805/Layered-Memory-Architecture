@@ -1,165 +1,153 @@
-# API Reference — Endpoints, Data Models, Streaming
+# API Reference — 24 Endpoints, Data Models, Streaming
 
 ## Base URL
 
-Default: http://localhost:8000. All endpoints return JSON unless noted.
+Default: http://localhost:8000. All endpoints return JSON unless noted. Version: 6.0.0.
 
-## Chat Endpoints
+## Chat Endpoints (3)
 
 ### POST /chat
-Non-streaming chat. Runs the full pipeline and returns complete response as JSON.
+Non-streaming chat. Runs the full pipeline and returns complete JSON.
 
 Request body:
 ```json
 {
   "user_query": "What is the BehaviorPolicy engine?",
   "conversation_id": "optional-uuid-string",
-  "tags": ["optional", "tag", "list"]
+  "tags": ["optional"],
+  "user_id": "default"
 }
 ```
-
-If conversation_id is omitted, a new UUID is generated and returned.
-If tags is omitted, tags are inferred via query_db.infer_tags().
 
 Response body:
 ```json
 {
-  "response": "The full response text as a string.",
-  "conversation_id": "uuid-string",
+  "response": "The full response text.",
+  "conversation_id": "uuid",
   "intent": "knowledge_base",
   "confidence": 0.92,
   "retrieval_info": {
-    "intent": "knowledge_base",
-    "confidence": 0.92,
-    "topic_similarity": null,
-    "route": "rag",
     "num_docs": 4,
     "similar_queries": 2,
-    "profile_injected": false
+    "behavior_mode": "standard",
+    "behavior_triggers": ["standard"]
   },
-  "query_tags": ["technical"]
+  "query_tags": ["technical"],
+  "behavior_mode": "standard"
 }
 ```
 
 ### POST /chat/stream
-Streaming chat using Vercel AI SDK data stream protocol over Server-Sent Events.
+Streaming chat using Vercel AI SDK data stream protocol over SSE. Same request body as POST /chat.
 
-Request body: same as POST /chat.
-
-Response: text/event-stream with the following line format (each line ends with \n):
-
-Stage events (before text tokens):
+Response: text/event-stream with stage events → text deltas → final metadata → finish events:
 ```
 8:[{"stage":"classified","intent":"knowledge_base","confidence":0.92}]
 8:[{"stage":"retrieved","retrieval_info":{"num_docs":4,"similar_queries":2}}]
 8:[{"stage":"generating"}]
-```
-
-Text delta tokens (one per streamed token):
-```
 0:"Hello"
-0:", here"
-0:" is the"
-0:" answer."
-```
-
-Final metadata annotation (after all tokens):
-```
+0:", here is"
+0:" the answer."
 8:[{"intent":"knowledge_base","confidence":0.92,"retrieval_info":{...},"query_tags":[...]}]
-```
-
-Finish events:
-```
 e:{"finishReason":"stop"}
 d:{"finishReason":"stop"}
 ```
 
-The retrieved stage annotation is only emitted if any retrieval occurred (num_docs, similar_queries, same_conv_qa, or profile_injected).
+### POST /chat/regenerate
+Delete last assistant message and regenerate. Request: `{"conversation_id": "uuid", "user_id": "default"}`.
 
-## Conversation Endpoints
+## Conversation Endpoints (9)
 
 ### POST /conversations
-Create a new conversation.
+Create new conversation. Request: `{"title": "My Chat"}`. Returns conversation dict with UUID.
 
-Request: `{"title": "My Chat"}` (title defaults to "New Chat").
-Response: `{"id":"uuid","title":"New Chat","created_at":"...","updated_at":"...","message_count":0}`.
+### GET /conversations?user_id=default
+List all conversations ordered by updated_at DESC.
 
-### GET /conversations?limit=50
-List all conversations ordered by most recently updated. Default limit: 50.
-Response: `{"conversations":[...], "count": N}`.
+### GET /conversations/search?q=...&user_id=default
+Search conversations by title/content using ILIKE.
 
-### GET /conversations/{conversation_id}
-Get a single conversation by ID.
-Response: conversation dict or 404.
+### GET /conversations/{id}
+Get conversation messages.
 
-### GET /conversations/{conversation_id}/messages?limit=200
-Get all messages in a conversation in chronological order.
-Response: `{"conversation_id":"uuid","messages":[{"role":"user","content":"..."},...],"count":N}`.
+### GET /conversations/{id}/messages?limit=200
+Get all messages in chronological order.
 
-### PUT /conversations/{conversation_id}
-Rename a conversation.
-Request: `{"title": "New Title"}`.
-Response: updated conversation dict.
+### PUT /conversations/{id}
+Rename. Request: `{"title": "New Title"}`.
 
-### DELETE /conversations/{conversation_id}
-Delete a conversation and all its messages and query history.
-Response: `{"deleted": true}` or 404.
+### DELETE /conversations/{id}
+Delete conversation and cascade: messages, queries, state, threads, insights, concepts.
 
-## Profile Endpoints
+### GET /conversations/{id}/export?format=json
+Export full conversation (messages + metadata) as JSON.
 
-### GET /profile
+### GET /conversations/{id}/state
+Inspect behavioral state for debugging. Returns ConversationState data: tone, pattern, repetition, testing, precision_mode, message_count, etc.
+
+## Research Endpoints (6) — v6.0.0
+
+### GET /conversations/{id}/threads
+List all topic threads for a conversation. Each thread has: id, label, message_count, summary, last_active.
+
+### GET /conversations/{id}/threads/{thread_id}
+Get single thread details including summary, label, message_count, centroid.
+
+### GET /conversations/{id}/insights
+List extracted research insights for a conversation. Each: id, insight_type, insight_text, confidence_score, thread_id.
+
+### GET /conversations/{id}/concepts
+List concept links for a conversation. Each: id, concept, source_type, source_id, thread_id.
+
+### GET /concepts/search?q=...&conversation_id=...
+Semantic search for related concepts. Embeds query q, searches concept_links via pgvector. Optional conversation_id filter.
+
+### GET /insights/search?q=...&k=10&type=...&conversation_id=...
+Cross-thread semantic search over extracted insights. Embeds query q, searches research_insights. Optional filters: type (decision/conclusion/hypothesis/open_question/observation), conversation_id.
+
+## Profile Endpoints (4)
+
+### GET /profile?user_id=default
 Get all stored user profile entries.
-Response: `{"entries":[{"id":1,"key":"name","value":"Alex","category":"personal"},...], "count": N}`.
 
 ### POST /profile
-Manually add a profile entry.
-Request: `{"key": "preferred_language", "value": "Python", "category": "preferences"}`.
-Response: `{"id": N, "key": "...", "value": "...", "category": "..."}`.
+Add entry. Request: `{"key": "name", "value": "Alex", "category": "personal", "user_id": "default"}`.
 
 ### PUT /profile/{entry_id}
-Update a profile entry by id.
-Request: same as POST.
-Response: updated entry.
+Update entry by id.
 
 ### DELETE /profile/{entry_id}
-Delete a profile entry by id.
-Response: `{"deleted": true}`.
+Delete entry by id.
 
-## Health Endpoint
+## System Endpoints (2)
 
 ### GET /health
-Returns system status for monitoring and load balancers.
-Response:
+Returns system status:
 ```json
 {
   "status": "ok",
   "database": "connected",
   "documents": 47,
   "llm_provider": "cerebras",
-  "version": "4.0.0"
+  "version": "6.0.0"
 }
 ```
 
-The "documents" field is the count of rows in document_chunks table. The "llm_provider" field is the .name property of the active provider instance.
-
-## Static Asset Serving
-
 ### GET /
-If frontend/dist/index.html exists, serves the React build. Otherwise falls back to the root index.html (vanilla HTML fallback). FastAPI mounts /assets from frontend/dist/assets when the React build exists.
+Serve React frontend from frontend/dist/ if it exists, otherwise fallback HTML. Static assets mounted from frontend/dist/assets/.
 
 ## When Database Is Unavailable
 
-All conversation and profile endpoints return graceful responses when DB_ENABLED is False:
+All endpoints return graceful responses when DB_ENABLED is False:
 - GET /conversations → {"conversations":[], "count":0}
-- POST/PUT/DELETE with DB unavailable → 503 with "Database not available"
+- POST/PUT/DELETE with DB → 503 "Database not available"
 - GET /profile → {"entries":[], "count":0}
 - /chat and /chat/stream still work (in-memory mode, no persistence)
 
-## Request Headers
+## Headers
 
-### Cache-Control and X-Accel-Buffering
-The /chat/stream endpoint sets Cache-Control: no-cache and X-Accel-Buffering: no to prevent proxy servers (Nginx, Caddy) from buffering the SSE stream.
+POST /chat/stream sets Cache-Control: no-cache and X-Accel-Buffering: no to prevent proxy buffering.
 
 ## CORS
 
-The FastAPI app has CORSMiddleware configured with allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]. This allows the Vite dev server on port 5173 to call the API on port 8000 during development.
+CORSMiddleware with allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]. Allows Vite dev server (port 5173) to call API (port 8000).

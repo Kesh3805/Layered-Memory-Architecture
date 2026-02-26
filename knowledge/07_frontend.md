@@ -42,6 +42,8 @@ App
 │   │       ├── AIRetrievalPanel (expandable retrieval info)
 │   │       ├── AITokenMeter (context usage bar)
 │   │       └── AIDebugPanel (raw JSON, Debug Mode only)
+│   ├── ThreadPanel (topic threads with labels, summaries, message counts — v6.0.0)
+│   ├── ResearchDashboard (insights + concepts for current conversation — v6.0.0)
 │   ├── WelcomeScreen (when no messages)
 │   └── InputArea (textarea + send/stop)
 ├── ProfileModal (when profile button clicked)
