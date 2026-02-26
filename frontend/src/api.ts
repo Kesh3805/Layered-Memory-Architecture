@@ -87,17 +87,17 @@ export async function deleteProfileEntry(id: number): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete profile entry');
 }
 
-/* ── Threads ────────────────────────────────────────────────────────────── */
+/* ── Threads (match backend query_db.get_threads response) ──────────────── */
 
 export interface Thread {
-  thread_id: string;
+  id: string;
   conversation_id: string;
-  centroid: number[] | null;
+  message_ids: string[];
   message_count: number;
+  summary: string;
+  label: string;
+  last_active: string | null;
   created_at: string | null;
-  updated_at: string | null;
-  summary: string | null;
-  label: string | null;
 }
 
 export async function getThreads(conversationId: string): Promise<{ threads: Thread[] }> {
@@ -112,22 +112,25 @@ export async function getThread(conversationId: string, threadId: string): Promi
   return res.json();
 }
 
-/* ── Research Insights ──────────────────────────────────────────────────── */
+/* ── Research Insights (match backend get_insights response) ────────────── */
 
 export interface Insight {
   id: number;
   conversation_id: string;
   thread_id: string | null;
   insight_type: string;
-  content: string;
-  confidence: number;
+  insight_text: string;
+  confidence_score: number;
+  source_message_id: string | null;
   created_at: string | null;
 }
 
 export interface ConceptLink {
   id: number;
-  conversation_id: string;
   concept: string;
+  source_type: string;
+  source_id: string;
+  conversation_id: string;
   thread_id: string | null;
   created_at: string | null;
 }
@@ -160,5 +163,21 @@ export async function searchInsights(
 export async function searchConcepts(q: string): Promise<{ concepts: ConceptLink[] }> {
   const res = await fetch(`${BASE}/concepts/search?q=${encodeURIComponent(q)}`);
   if (!res.ok) throw new Error('Failed to search concepts');
+  return res.json();
+}
+
+/* ── Health ──────────────────────────────────────────────────────────────── */
+
+export interface HealthStatus {
+  status: string;
+  database: string;
+  documents: number;
+  llm_provider: string;
+  version: string;
+}
+
+export async function getHealth(): Promise<HealthStatus> {
+  const res = await fetch(`${BASE}/health`);
+  if (!res.ok) throw new Error('Health check failed');
   return res.json();
 }

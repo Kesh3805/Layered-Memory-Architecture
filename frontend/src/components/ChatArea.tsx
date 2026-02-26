@@ -116,7 +116,7 @@ export default function ChatArea({ chat }: Props) {
                   <AIMessage
                     key={m.id}
                     message={m}
-                    isStreaming={chat.isLoading && m.id === chat.messages[chat.messages.length - 1]?.id && m.role === 'assistant'}
+                    isStreaming={chat.streamingId === m.id}
                   />
                 ))}
                 <div ref={bottomRef} />

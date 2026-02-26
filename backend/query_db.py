@@ -26,6 +26,23 @@ from settings import settings
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_vector(val):
+    """Convert a pgvector string like '[0.1,0.2,...]' to a Python list of floats.
+
+    psycopg2 returns vector columns as strings when the pgvector adapter is not
+    registered.  This helper normalises the value so callers always get a list.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        return list(val)
+    if isinstance(val, str):
+        return [float(x) for x in val.strip("[]").split(",")]
+    # numpy array or similar — convert via tolist
+    return list(val)
+
+
 # ---------------------------------------------------------------------------
 #  Connection config — DATABASE_URL takes priority, falls back to settings.
 # ---------------------------------------------------------------------------
@@ -328,6 +345,37 @@ def init_db():
             "ON concept_links(concept);"
         )
 
+        # ── Dimension migration ─────────────────────────────────
+        # If EMBEDDING_DIMENSION changed after initial table creation,
+        # ALTER COLUMN cannot resize vector columns — drop & recreate.
+        _migration_cols = [
+            ("conversations", "topic_embedding"),
+            ("user_queries", "embedding"),
+            ("document_chunks", "embedding"),
+            ("conversation_threads", "centroid_embedding"),
+            ("research_insights", "embedding"),
+            ("concept_links", "embedding"),
+        ]
+        for tbl, col in _migration_cols:
+            try:
+                cur.execute(
+                    "SELECT atttypmod FROM pg_attribute "
+                    "WHERE attrelid = %s::regclass AND attname = %s;",
+                    (tbl, col),
+                )
+                row = cur.fetchone()
+                if row and row[0] > 0 and row[0] != _dim:
+                    logger.info(f"Migrating {tbl}.{col}: vector({row[0]}) → vector({_dim})")
+                    cur.execute(f"ALTER TABLE {tbl} DROP COLUMN {col};")
+                    cur.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} vector({_dim});")
+                    # After migrating document_chunks, rows have NULL embeddings
+                    # so clear them to trigger re-indexing on next startup.
+                    if tbl == "document_chunks":
+                        cur.execute("DELETE FROM document_chunks;")
+                        logger.info("Cleared document_chunks — will re-index on next startup")
+            except Exception:
+                pass
+
         cur.close()
         logger.info("Database initialized – intent-gated architecture ready")
         return True
@@ -338,6 +386,25 @@ def init_db():
     finally:
         if conn is not None:
             conn.close()
+
+
+def ensure_conversation_exists(conversation_id: str, title: str = "New Chat") -> None:
+    """Insert a conversations row if it doesn't already exist (idempotent)."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO conversations (id, title) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
+            (conversation_id, title),
+        )
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        logger.error(f"Error ensuring conversation: {e}")
+    finally:
+        if conn is not None:
+            put_connection(conn)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -549,10 +616,7 @@ def get_topic_vector(conversation_id: str):
         row = cur.fetchone()
         cur.close()
         if row and row[0] is not None:
-            # psycopg2 returns pgvector as a list-like string; convert to np array
-            vec = row[0]
-            if isinstance(vec, str):
-                vec = [float(x) for x in vec.strip("[]").split(",")]
+            vec = _parse_vector(row[0])
             return np.array(vec, dtype=np.float32)
         return None
     except Exception as e:
@@ -586,9 +650,7 @@ def update_topic_vector(conversation_id: str, new_embedding, alpha: float = 0.1)
             new_emb = new_emb.tolist()
 
         if row and row[0] is not None:
-            old_vec = row[0]
-            if isinstance(old_vec, str):
-                old_vec = [float(x) for x in old_vec.strip("[]").split(",")]
+            old_vec = _parse_vector(row[0])
             old_arr = np.array(old_vec, dtype=np.float32)
             new_arr = np.array(new_emb, dtype=np.float32)
             blended = ((1.0 - alpha) * old_arr + alpha * new_arr).tolist()
@@ -908,7 +970,7 @@ def store_query(query_text, embedding, response_text="", conversation_id=None,
         cur.execute("""
             INSERT INTO user_queries
             (query_text, embedding, user_id, conversation_id, response_text, tags, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;
+            VALUES (%s, %s::vector, %s, %s, %s, %s, %s) RETURNING id;
         """, (query_text, emb, user_id, conversation_id, response_text,
               tags or infer_tags(query_text), Json(metadata or {})))
         qid = cur.fetchone()[0]
@@ -1059,9 +1121,37 @@ def search_document_chunks(embedding, k: int = 4, min_similarity: float = 0.0) -
         """, (emb, emb, k))
         results = cur.fetchall()
         cur.close()
-        return [r[0] for r in results if r[1] >= min_similarity]
+        return [r[0] for r in results if r[1] is not None and r[1] >= min_similarity]
     except Exception as e:
         logger.error(f"Error searching document chunks: {e}")
+        return []
+    finally:
+        if conn is not None:
+            put_connection(conn)
+
+
+def search_document_chunks_with_scores(embedding, k: int = 4, min_similarity: float = 0.0) -> list[tuple[str, float]]:
+    """Semantic search returning (content, similarity) tuples.
+
+    Same as search_document_chunks but preserves similarity scores
+    for retrieval quality analysis.
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+        cur.execute("""
+            SELECT content, 1 - (embedding <=> %s::vector) AS similarity
+            FROM document_chunks
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+        """, (emb, emb, k))
+        results = cur.fetchall()
+        cur.close()
+        return [(r[0], round(float(r[1]), 4)) for r in results if r[1] is not None and r[1] >= min_similarity]
+    except Exception as e:
+        logger.error(f"Error searching document chunks with scores: {e}")
         return []
     finally:
         if conn is not None:
@@ -1226,7 +1316,7 @@ def get_threads(conversation_id: str) -> list[dict]:
         return [
             {
                 "id": r[0], "conversation_id": r[1],
-                "centroid_embedding": r[2], "message_ids": r[3] or [],
+                "centroid_embedding": _parse_vector(r[2]), "message_ids": r[3] or [],
                 "message_count": r[4], "summary": r[5],
                 "label": r[6], "last_active": r[7].isoformat() if r[7] else None,
                 "created_at": r[8].isoformat() if r[8] else None,
@@ -1258,7 +1348,7 @@ def get_thread(thread_id: str) -> dict | None:
             return None
         return {
             "id": r[0], "conversation_id": r[1],
-            "centroid_embedding": r[2], "message_ids": r[3] or [],
+            "centroid_embedding": _parse_vector(r[2]), "message_ids": r[3] or [],
             "message_count": r[4], "summary": r[5],
             "label": r[6], "last_active": r[7].isoformat() if r[7] else None,
             "created_at": r[8].isoformat() if r[8] else None,

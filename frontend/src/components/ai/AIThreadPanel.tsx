@@ -70,15 +70,15 @@ export default function AIThreadPanel() {
       <div className="flex-1 overflow-y-auto py-2 space-y-1">
         {threads.map((thread) => {
           const threadInsights = insights.filter(
-            (i) => i.thread_id === thread.thread_id,
+            (i) => i.thread_id === thread.id,
           );
-          const isExpanded = expandedThread === thread.thread_id;
+          const isExpanded = expandedThread === thread.id;
 
           return (
-            <div key={thread.thread_id} className="mx-2">
+            <div key={thread.id} className="mx-2">
               <button
                 onClick={() =>
-                  setExpandedThread(isExpanded ? null : thread.thread_id)
+                  setExpandedThread(isExpanded ? null : thread.id)
                 }
                 className={`w-full flex items-start gap-2 px-3 py-2.5 rounded-lg text-left
                   transition-colors text-sm ${
@@ -94,7 +94,7 @@ export default function AIThreadPanel() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-medium truncate text-xs">
-                      {thread.label || thread.thread_id.slice(0, 8) + '…'}
+                      {thread.label || thread.id.slice(0, 8) + '…'}
                     </span>
                     <ChevronDown
                       size={10}
@@ -114,10 +114,10 @@ export default function AIThreadPanel() {
                         {threadInsights.length} insights
                       </span>
                     )}
-                    {thread.updated_at && (
+                    {thread.last_active && (
                       <span className="flex items-center gap-1">
                         <Clock size={9} />
-                        {new Date(thread.updated_at).toLocaleDateString()}
+                        {new Date(thread.last_active).toLocaleDateString()}
                       </span>
                     )}
                   </div>
@@ -148,15 +148,15 @@ export default function AIThreadPanel() {
                           <InsightTypeIcon type={insight.insight_type} />
                           <div className="flex-1 min-w-0">
                             <span className="text-gray-300">
-                              {insight.content}
+                              {insight.insight_text}
                             </span>
                             <div className="flex items-center gap-2 mt-0.5 text-sidebar-muted">
                               <span className="capitalize">
                                 {insight.insight_type.replace('_', ' ')}
                               </span>
-                              {insight.confidence > 0 && (
+                              {insight.confidence_score > 0 && (
                                 <span>
-                                  {Math.round(insight.confidence * 100)}%
+                                  {Math.round(insight.confidence_score * 100)}%
                                 </span>
                               )}
                             </div>
@@ -168,7 +168,7 @@ export default function AIThreadPanel() {
 
                   {/* Thread ID */}
                   <div className="px-1 text-[9px] text-sidebar-muted/50 font-mono">
-                    {thread.thread_id}
+                    {thread.id}
                   </div>
                 </div>
               )}

@@ -61,6 +61,7 @@ from conversation_state import (
 from behavior_engine import BehaviorEngine, BehaviorDecision
 from topic_threading import resolve_thread, get_thread_context
 from research_memory import get_research_context, extract_concepts, link_concepts, extract_insights
+from telemetry import PipelineTelemetry, TelemetryStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -106,6 +107,65 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+#  Runtime config overrides (for experiments — does not touch Settings)
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+class _RuntimeConfig:
+    """Mutable runtime overrides for A/B experiments.
+    
+    These override Settings flags at the pipeline level.
+    Thread-safe.  Reset with POST /experiments/reset.
+    """
+    def __init__(self):
+        self._lock = _threading.Lock()
+        self._overrides: dict[str, bool] = {}
+
+    def set(self, key: str, value: bool):
+        with self._lock:
+            self._overrides[key] = value
+
+    def get(self, key: str, default: bool) -> bool:
+        with self._lock:
+            return self._overrides.get(key, default)
+
+    def reset(self):
+        with self._lock:
+            self._overrides.clear()
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return dict(self._overrides)
+
+    # Convenience: is the subsystem ON (settings + override)?
+    @property
+    def behavior_enabled(self) -> bool:
+        if settings.BASELINE_MODE:
+            return False
+        return self.get("behavior_engine", settings.BEHAVIOR_ENGINE_ENABLED)
+
+    @property
+    def threading_enabled(self) -> bool:
+        if settings.BASELINE_MODE:
+            return False
+        return self.get("thread_enabled", settings.THREAD_ENABLED)
+
+    @property
+    def research_enabled(self) -> bool:
+        if settings.BASELINE_MODE:
+            return False
+        return self.get("research_insights", settings.RESEARCH_INSIGHTS_ENABLED)
+
+    @property
+    def concepts_enabled(self) -> bool:
+        if settings.BASELINE_MODE:
+            return False
+        return self.get("concept_linking", settings.CONCEPT_LINKING_ENABLED)
+
+
+runtime_config = _RuntimeConfig()
 
 # ---------------------------------------------------------------------------
 #  Request / response models
@@ -219,11 +279,16 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     query = request.user_query
     query_tags = request.tags or query_db.infer_tags(query)
 
+    # ── Telemetry ─────────────────────────────────────────────────────
+    tel = PipelineTelemetry(conversation_id=cid, query=query)
+    tel.mark("pipeline_start")
+
     # Steps 1+2 (parallel): embed query AND load DB state simultaneously.
     # These three are fully independent — running them concurrently
     # cuts the pipeline preamble from ~90ms serial → ~50ms parallel.
     recent_messages: list = []
     profile_entries: list = []
+    tel.mark("embed_start")
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_embed = pool.submit(get_query_embedding, query)
         if DB_ENABLED:
@@ -233,11 +298,15 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     if DB_ENABLED:
         recent_messages = fut_history.result()
         profile_entries = fut_profile.result()
+    tel.mark("embed_end")
 
     # Step 3: Classify intent
+    tel.mark("classify_start")
     intent_result = classify_intent(query, recent_messages)
     intent = intent_result["intent"]
     confidence = intent_result["confidence"]
+    tel.record_intent(intent, confidence, source=intent_result.get("source", "llm"))
+    tel.mark("classify_end")
     logger.info(f"Intent: {intent} ({confidence:.2f})")
 
     # Step 4: Topic similarity gate (only for continuation)
@@ -251,11 +320,15 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             topic_similarity = dot / norm if norm > 0 else 0.0
             if topic_similarity < _TOPIC_THRESHOLD:
                 logger.info(f"Topic gate: {topic_similarity:.3f} < threshold → general")
+                tel.record_topic_gate(topic_similarity, fired=True, original_intent=intent)
                 intent, confidence = "general", 0.7
+            else:
+                tel.record_topic_gate(topic_similarity, fired=False)
 
     # Step 5: Behavior engine — conversational state + behavioral routing
+    tel.mark("behavior_start")
     behavior_decision = BehaviorDecision()  # default: standard mode
-    if settings.BEHAVIOR_ENGINE_ENABLED:
+    if runtime_config.behavior_enabled:
         # Load / create conversation state
         conv_state = get_or_create_state(cid)
         # Try to load from DB if state is fresh (message_count == 0) and DB has data
@@ -282,6 +355,8 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
 
         # Run behavior engine
         behavior_decision = BehaviorEngine.evaluate(conv_state, query, intent, confidence)
+        tel.record_behavior(behavior_decision)
+        tel.record_state(conv_state)
         logger.info(
             f"Behavior: mode={behavior_decision.behavior_mode}, "
             f"personality={behavior_decision.personality_mode}, "
@@ -289,13 +364,15 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             f"triggers={behavior_decision.triggers}, "
             f"skip_retrieval={behavior_decision.skip_retrieval}"
         )
+    tel.mark("behavior_end")
 
     # Step 6: Topic threading — resolve which thread this message belongs to
+    tel.mark("thread_start")
     active_thread_id = ""
     thread_context = None
     research_context_data = None
     thread_result = None
-    if settings.THREAD_ENABLED and DB_ENABLED:
+    if runtime_config.threading_enabled and DB_ENABLED:
         thread_result = resolve_thread(cid, query_embedding, db_enabled=DB_ENABLED)
         active_thread_id = thread_result.thread_id
         if active_thread_id:
@@ -305,12 +382,19 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                 f"(new={thread_result.is_new}, sim={thread_result.similarity:.3f}, "
                 f"msgs={thread_result.message_count})"
             )
+    if thread_result:
+        tel.record_thread(thread_result)
+    tel.mark("thread_end")
 
     # Step 7: Research context — gather related insights + concepts
-    if settings.RESEARCH_INSIGHTS_ENABLED and DB_ENABLED:
+    tel.mark("research_start")
+    if runtime_config.research_enabled and DB_ENABLED:
         research_context_data = get_research_context(cid, query_embedding, active_thread_id, db_enabled=DB_ENABLED)
+        tel.record_research_context(research_context_data)
+    tel.mark("research_end")
 
     # Step 8: Context features + policy resolve
+    tel.mark("policy_start")
     features = extract_context_features(
         query=query,
         intent=intent,
@@ -320,9 +404,11 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     )
     decision = BehaviorPolicy().resolve(features, intent)
     decision = Hooks.run_policy_override(features, decision)
+    tel.record_policy(decision)
+    tel.mark("policy_end")
 
     # Step 8b: Apply behavior decision to policy overrides
-    if settings.BEHAVIOR_ENGINE_ENABLED:
+    if runtime_config.behavior_enabled:
         if behavior_decision.skip_retrieval:
             decision.inject_rag = False
             decision.inject_qa_history = False
@@ -345,6 +431,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     )
 
     # Step 9: History pruning (conditional on policy)
+    tel.mark("history_start")
     curated_history = None
     if decision.use_curated_history and recent_messages:
         recency_slice = recent_messages[-_RECENCY_WINDOW:]
@@ -359,12 +446,18 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                     if item.get("response"):
                         semantic_extra.append({"role": "assistant", "content": item["response"][:400]})
         curated_history = semantic_extra + recency_slice
+        tel.record_history(
+            raw=len(recent_messages), curated=len(curated_history),
+            recency=len(recency_slice), semantic=len(semantic_extra),
+        )
         logger.info(
             f"History: {len(recent_messages)} raw → {len(curated_history)} curated "
             f"(recency={len(recency_slice)}, semantic={len(semantic_extra)})"
         )
+    tel.mark("history_end")
 
     # Step 10: Selective retrieval (driven by policy decision)
+    tel.mark("retrieve_start")
     rag_context = ""
     profile_context = ""
     similar_qa_context = ""
@@ -375,10 +468,17 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         "route": decision.retrieval_route,
     }
 
+    rag_similarities: list[float] = []
+
     if decision.inject_rag:
-        docs = vector_store.search(query, k=decision.rag_k, min_similarity=decision.rag_min_similarity)
+        docs_with_scores = vector_store.search_with_scores(query, k=decision.rag_k, min_similarity=decision.rag_min_similarity)
+        docs = [text for text, _score in docs_with_scores]
+        rag_similarities = [score for _text, score in docs_with_scores]
         rag_context = "\n".join(docs)
         retrieval_info["num_docs"] = len(docs)
+        if rag_similarities:
+            retrieval_info["rag_best_similarity"] = max(rag_similarities)
+            retrieval_info["rag_avg_similarity"] = sum(rag_similarities) / len(rag_similarities)
         if DB_ENABLED:
             similar_queries = query_db.retrieve_similar_queries(
                 query_embedding, k=decision.qa_k, conversation_id=cid,
@@ -412,8 +512,17 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     if decision.greeting_name:
         retrieval_info["greeting_personalized"] = True
 
+    tel.record_retrieval(
+        rag_docs=retrieval_info.get("num_docs", 0),
+        cross_qa=retrieval_info.get("similar_queries", 0),
+        same_qa=retrieval_info.get("same_conv_qa", 0),
+        profile=retrieval_info.get("profile_injected", False),
+        rag_similarities=rag_similarities,
+    )
+    tel.mark("retrieve_end")
+
     # Inject behavior engine metadata into retrieval_info for observability
-    if settings.BEHAVIOR_ENGINE_ENABLED:
+    if runtime_config.behavior_enabled:
         retrieval_info["behavior_mode"] = behavior_decision.behavior_mode
         retrieval_info["behavior_triggers"] = behavior_decision.triggers
         retrieval_info["personality_mode"] = behavior_decision.personality_mode
@@ -426,6 +535,18 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     if research_context_data:
         retrieval_info["research_insights_count"] = len(research_context_data.get("related_insights", []))
         retrieval_info["concept_links_count"] = len(research_context_data.get("concept_links", []))
+
+    # Token estimates
+    tel.record_tokens(
+        query=max(1, len(query) // 4),
+        history=max(1, sum(len(m.get("content", "")) // 4 for m in (curated_history or recent_messages))),
+        rag=max(1, len(rag_context) // 4) if rag_context else 0,
+        profile=max(1, len(profile_context) // 4) if profile_context else 0,
+    )
+
+    tel.mark("pipeline_end")
+    tel.finalize()
+    TelemetryStore.append(tel)
 
     return Hooks.run_before_generation(PipelineResult(
         query=query,
@@ -485,6 +606,9 @@ def persist_after_response(p: PipelineResult, response_text: str):
 
     def _work():
         try:
+            # Ensure the conversation row exists before any FK-dependent writes
+            query_db.ensure_conversation_exists(p.cid)
+
             existing = query_db.get_conversation_messages(p.cid, limit=1)
             is_first = len(existing) == 0
 
@@ -528,13 +652,13 @@ def persist_after_response(p: PipelineResult, response_text: str):
                 )
 
             # Persist conversation state for behavioral intelligence
-            if settings.BEHAVIOR_ENGINE_ENABLED and settings.BEHAVIOR_STATE_PERSIST:
+            if runtime_config.behavior_enabled and settings.BEHAVIOR_STATE_PERSIST:
                 from conversation_state import get_or_create_state as _get_state
                 conv_st = _get_state(p.cid)
                 query_db.save_conversation_state(p.cid, conv_st.to_dict())
 
             # Research extraction: insights + concepts (async-safe, non-blocking)
-            if settings.RESEARCH_INSIGHTS_ENABLED:
+            if runtime_config.research_enabled:
                 try:
                     from llm.client import completion as _completion
                     insights = extract_insights(
@@ -545,7 +669,7 @@ def persist_after_response(p: PipelineResult, response_text: str):
                 except Exception as e:
                     logger.error(f"Insight extraction error: {e}")
 
-            if settings.CONCEPT_LINKING_ENABLED:
+            if runtime_config.concepts_enabled:
                 try:
                     combined = f"{p.query} {response_text}"
                     concepts = extract_concepts(combined)
@@ -561,7 +685,7 @@ def persist_after_response(p: PipelineResult, response_text: str):
                     logger.error(f"Concept linking error: {e}")
 
             # Thread summarization check
-            if settings.THREAD_ENABLED and p.active_thread_id:
+            if runtime_config.threading_enabled and p.active_thread_id:
                 try:
                     from thread_summarizer import maybe_summarize
                     maybe_summarize(p.active_thread_id, p.cid)
@@ -936,6 +1060,99 @@ def chat_stream(request: ChatRequest):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  TELEMETRY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/telemetry")
+def telemetry_summary():
+    """Aggregate telemetry statistics across all recorded pipeline runs."""
+    return TelemetryStore.summary()
+
+
+@app.get("/telemetry/recent")
+def telemetry_recent(n: int = 20):
+    """Last N pipeline telemetry records (most recent first)."""
+    records = TelemetryStore.recent(n)
+    return {"records": list(reversed(records)), "count": len(records)}
+
+
+@app.post("/telemetry/export")
+def telemetry_export(format: str = "jsonl"):
+    """Export telemetry to experiments/ directory. Returns path and count."""
+    from pathlib import Path as _P
+    _exp = _P(__file__).resolve().parent.parent / "experiments" / "data"
+    _exp.mkdir(parents=True, exist_ok=True)
+    import time as _t
+    ts = int(_t.time())
+    if format == "csv":
+        path = _exp / f"telemetry_{ts}.csv"
+        count = TelemetryStore.export_csv(path)
+    else:
+        path = _exp / f"telemetry_{ts}.jsonl"
+        count = TelemetryStore.export_jsonl(path)
+    return {"path": str(path), "count": count, "format": format}
+
+
+@app.post("/telemetry/clear")
+def telemetry_clear():
+    """Clear all in-memory telemetry records."""
+    TelemetryStore.clear()
+    return {"cleared": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  EXPERIMENT RUNTIME CONFIG
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ExperimentConfigRequest(BaseModel):
+    """Runtime subsystem overrides for A/B experiments."""
+    behavior_engine: Optional[bool] = None
+    thread_enabled: Optional[bool] = None
+    research_insights: Optional[bool] = None
+    concept_linking: Optional[bool] = None
+
+
+@app.get("/experiments/config")
+def get_experiment_config():
+    """Return current runtime overrides and effective subsystem state."""
+    return {
+        "overrides": runtime_config.snapshot(),
+        "baseline_mode": settings.BASELINE_MODE,
+        "effective": {
+            "behavior_engine": runtime_config.behavior_enabled,
+            "thread_enabled": runtime_config.threading_enabled,
+            "research_insights": runtime_config.research_enabled,
+            "concept_linking": runtime_config.concepts_enabled,
+        },
+    }
+
+
+@app.post("/experiments/config")
+def set_experiment_config(req: ExperimentConfigRequest):
+    """Set runtime overrides — instantly toggles subsystems for A/B testing.
+    
+    Does not modify Settings or environment.  Use POST /experiments/reset to clear.
+    """
+    if req.behavior_engine is not None:
+        runtime_config.set("behavior_engine", req.behavior_engine)
+    if req.thread_enabled is not None:
+        runtime_config.set("thread_enabled", req.thread_enabled)
+    if req.research_insights is not None:
+        runtime_config.set("research_insights", req.research_insights)
+    if req.concept_linking is not None:
+        runtime_config.set("concept_linking", req.concept_linking)
+    return get_experiment_config()
+
+
+@app.post("/experiments/reset")
+def reset_experiment_config():
+    """Clear all runtime overrides — revert to Settings defaults."""
+    runtime_config.reset()
+    return {"reset": True, **get_experiment_config()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  HEALTH CHECK
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -950,6 +1167,7 @@ def health_check():
         "documents": vector_store.count(),
         "llm_provider": get_provider().name,
         "version": app.version,
+        "telemetry_records": TelemetryStore.count(),
     }
 
 

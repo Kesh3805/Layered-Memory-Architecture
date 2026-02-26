@@ -119,7 +119,12 @@ def generate_title(user_message: str) -> str:
             {"role": "system", "content": TITLE_PROMPT},
             {"role": "user", "content": user_message},
         ]
-        title = completion(messages, temperature=0.5, max_tokens=MAX_TITLE_TOKENS).strip().strip('"').strip("'")
+        raw = completion(messages, temperature=0.5, max_tokens=MAX_TITLE_TOKENS)
+        title = (raw or "").strip().strip('"').strip("'")
+        if not title:
+            # LLM returned empty — fall back to first words
+            words = user_message.split()[:5]
+            return " ".join(words) + ("..." if len(user_message.split()) > 5 else "")
         if len(title) > 50:
             title = title[:50].rsplit(" ", 1)[0] or title[:50]
         return title

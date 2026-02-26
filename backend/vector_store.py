@@ -78,6 +78,35 @@ def search(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> 
         return [_fallback_docs[i] for i in topk if sims[i] >= min_similarity]
 
 
+def search_with_scores(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> list[tuple[str, float]]:
+    """Semantic search returning (text, similarity) tuples.
+
+    Same as search() but preserves cosine similarity scores for
+    retrieval quality analysis and telemetry.
+    """
+    if k is None:
+        from settings import settings
+        k = settings.RETRIEVAL_K
+
+    if _db_available:
+        import query_db
+        from embeddings import get_query_embedding
+        embedding = get_query_embedding(query)
+        return query_db.search_document_chunks_with_scores(embedding, k=k, min_similarity=min_similarity)
+    else:
+        from embeddings import get_query_embedding
+        if not _fallback_docs:
+            return []
+        qe = get_query_embedding(query)
+        sims = []
+        for emb in _fallback_embeddings:
+            dot = float(np.dot(qe, emb))
+            norm = float(np.linalg.norm(qe) * np.linalg.norm(emb))
+            sims.append(dot / norm if norm > 0 else 0.0)
+        topk = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
+        return [(_fallback_docs[i], sims[i]) for i in topk if sims[i] >= min_similarity]
+
+
 def has_documents() -> bool:
     """Check if any documents are indexed."""
     if _db_available:

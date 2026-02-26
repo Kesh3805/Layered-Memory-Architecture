@@ -13,6 +13,9 @@ export default defineConfig({
       '/chat': 'http://localhost:8000',
       '/conversations': 'http://localhost:8000',
       '/profile': 'http://localhost:8000',
+      '/insights': 'http://localhost:8000',
+      '/concepts': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
     },
   },
   build: {

@@ -16,14 +16,14 @@ import { Copy, Check, Bot, UserIcon, ChevronDown, Bug } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-import type { Message } from 'ai';
+import type { StreamMessage } from '../hooks/use-chat-stream';
 
 import { AIStatusBar, AIIntentBadge, AIRetrievalPanel, AITokenMeter, AIDebugPanel } from './ai';
 import type { StageEvent } from './ai';
 import { useChatStore } from '../store';
 
 interface Props {
-  message: Message;
+  message: StreamMessage;
   isStreaming?: boolean;
 }
 
@@ -46,7 +46,7 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
   // ── Parse annotations into stages + final metadata ──────────────────
   const { stages, metadata } = useMemo(() => {
-    const annotations: Record<string, any>[] = (message as any).annotations ?? [];
+    const annotations: Record<string, any>[] = message.annotations ?? [];
     const stageEvents: StageEvent[] = [];
     let meta: Record<string, any> = {};
 
@@ -59,7 +59,7 @@ export default function AIMessage({ message, isStreaming }: Props) {
       }
     }
     return { stages: stageEvents, metadata: meta };
-  }, [(message as any).annotations]);
+  }, [message.annotations]);
 
   const hasMetadata = Object.keys(metadata).length > 0;
   const ri = metadata.retrieval_info || stages.find(s => s.stage === 'retrieved')?.retrieval_info;
@@ -120,9 +120,9 @@ export default function AIMessage({ message, isStreaming }: Props) {
         {streamingPhase && (
           <div className="flex items-center gap-2 py-2 text-sm text-sidebar-muted">
             <div className="flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:0ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:150ms]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-bounce [animation-delay:300ms]" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
+              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
             </div>
             {streamingPhase}
           </div>
@@ -143,7 +143,7 @@ export default function AIMessage({ message, isStreaming }: Props) {
               {message.content}
             </ReactMarkdown>
             {isStreaming && (
-              <span className="inline-block w-2 h-4 bg-accent animate-pulse rounded-sm ml-0.5" />
+              <span className="inline-block w-2 h-4 bg-accent streaming-cursor rounded-sm ml-0.5" />
             )}
           </div>
         )}

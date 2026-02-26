@@ -64,6 +64,7 @@ def classify_intent(
     cached = cache.get_classification(user_query)
     if cached:
         logger.info(f"Cache hit: intent={cached['intent']}")
+        cached.setdefault("source", "cache")
         return cached
 
     # ── Greeting fast-path (saves a full LLM round-trip) ─────────────────
@@ -75,7 +76,7 @@ def classify_intent(
                 query_lower.startswith(_pat) and (_rest == "" or _rest[0] in " ,!?")
             ):
                 logger.info("Pre-heuristic: greeting → general (no LLM)")
-                return {"intent": "general", "confidence": 0.97}
+                return {"intent": "general", "confidence": 0.97, "source": "heuristic:greeting"}
 
     # ── Profile statement fast-path ───────────────────────────────────────
     # Only for SHORT declarative statements.  Longer messages starting with
@@ -86,12 +87,12 @@ def classify_intent(
         and any(query_lower.startswith(p) for p in _PROFILE_OPENERS)
     ):
         logger.info("Pre-heuristic: profile statement → profile (no LLM)")
-        return {"intent": "profile", "confidence": 0.92}
+        return {"intent": "profile", "confidence": 0.92, "source": "heuristic:profile"}
 
     # ── Fast privacy check ────────────────────────────────────────────────
     if any(sig in query_lower for sig in PRIVACY_SIGNALS):
         logger.info("Pre-heuristic: privacy signal detected")
-        return {"intent": "privacy", "confidence": 0.95}
+        return {"intent": "privacy", "confidence": 0.95, "source": "heuristic:privacy"}
 
     # ── Continuation check (needs context) ────────────────────────────────
     if conversation_context and len(conversation_context) >= 2:
@@ -106,7 +107,7 @@ def classify_intent(
             or (has_signal and word_count <= 4)   # "Why?" "Elaborate" "More details"
         ):
             logger.info("Pre-heuristic: continuation (pronoun/signal + short follow-up)")
-            return {"intent": "continuation", "confidence": 0.85}
+            return {"intent": "continuation", "confidence": 0.85, "source": "heuristic:continuation"}
 
     # ── LLM classification ────────────────────────────────────────────────
     try:
@@ -121,11 +122,16 @@ def classify_intent(
             {"role": "user", "content": f"Message: {user_query}{context_text}"},
         ]
 
-        raw = completion(
+        _raw = completion(
             messages,
             temperature=0.0,
             max_tokens=MAX_CLASSIFIER_TOKENS,
-        ).strip()
+        )
+        raw = (_raw or "").strip()
+
+        if not raw:
+            logger.warning("Empty classifier response — defaulting to general")
+            return {"intent": "general", "confidence": 0.5, "source": "llm:empty"}
 
         # Robust JSON extraction
         if "```" in raw:
@@ -147,10 +153,10 @@ def classify_intent(
             logger.warning(f"Unknown intent '{intent}' → general")
             intent = "general"
 
-        result = {"intent": intent, "confidence": confidence}
+        result = {"intent": intent, "confidence": confidence, "source": "llm"}
         cache.set_classification(user_query, result)
         return result
 
     except Exception as e:
         logger.error(f"Classification error: {e}")
-        return {"intent": "general", "confidence": 0.5}
+        return {"intent": "general", "confidence": 0.5, "source": "llm:error"}

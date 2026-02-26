@@ -107,6 +107,9 @@ def extract_insights(
             temperature=0.1,
         )
 
+        if not raw:
+            return []
+
         insights = _parse_insights_json(raw)
         if not insights:
             return []

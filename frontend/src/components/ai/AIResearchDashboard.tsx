@@ -66,7 +66,7 @@ export default function AIResearchDashboard() {
     }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      result = result.filter((i) => i.content.toLowerCase().includes(q));
+      result = result.filter((i) => i.insight_text.toLowerCase().includes(q));
     }
     return result;
   }, [insights, insightFilter, searchQuery]);
@@ -102,7 +102,7 @@ export default function AIResearchDashboard() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center palette-backdrop bg-black/60">
-      <div className="w-[900px] max-w-[95vw] h-[700px] max-h-[90vh] bg-sidebar-bg border border-sidebar-border rounded-xl shadow-2xl flex flex-col overflow-hidden fade-in">
+      <div className="w-[900px] max-w-[95vw] h-[700px] max-h-[90vh] bg-sidebar-bg border border-sidebar-border rounded-xl shadow-2xl flex flex-col overflow-hidden scale-in">
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-sidebar-border">
           <Brain size={18} className="text-accent" />
@@ -205,17 +205,17 @@ function ThreadsView({
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
       {threads.map((thread) => {
         const threadInsights = insights.filter(
-          (i) => i.thread_id === thread.thread_id,
+          (i) => i.thread_id === thread.id,
         );
         return (
           <div
-            key={thread.thread_id}
+            key={thread.id}
             className="rounded-lg border border-sidebar-border bg-sidebar-hover/20 p-4 space-y-2"
           >
             <div className="flex items-center gap-2">
               <GitBranch size={13} className="text-accent" />
               <span className="text-sm font-medium text-white">
-                {thread.label || thread.thread_id.slice(0, 12) + '…'}
+                {thread.label || thread.id.slice(0, 12) + '…'}
               </span>
             </div>
             <div className="flex items-center gap-3 text-[10px] text-sidebar-muted">
@@ -253,7 +253,7 @@ function ThreadsView({
               </div>
             )}
             <div className="text-[9px] text-sidebar-muted/40 font-mono">
-              {thread.thread_id}
+              {thread.id}
             </div>
           </div>
         );
@@ -283,7 +283,7 @@ function InsightsView({
 }) {
   const getThreadLabel = (threadId: string | null) => {
     if (!threadId) return null;
-    const t = threads.find((t) => t.thread_id === threadId);
+    const t = threads.find((t) => t.id === threadId);
     return t?.label || threadId.slice(0, 8) + '…';
   };
 
@@ -339,13 +339,13 @@ function InsightsView({
             >
               <Lightbulb size={14} className="mt-0.5 flex-shrink-0" />
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] leading-relaxed">{insight.content}</p>
+                <p className="text-[11px] leading-relaxed">{insight.insight_text}</p>
                 <div className="flex items-center gap-3 mt-1.5 text-[10px] opacity-70">
                   <span className="font-medium capitalize">
                     {insight.insight_type.replace('_', ' ')}
                   </span>
-                  {insight.confidence > 0 && (
-                    <span>{Math.round(insight.confidence * 100)}% confidence</span>
+                  {insight.confidence_score > 0 && (
+                    <span>{Math.round(insight.confidence_score * 100)}% confidence</span>
                   )}
                   {insight.thread_id && (
                     <span className="flex items-center gap-1">
@@ -442,7 +442,7 @@ function ConceptGraphView({
               const linkedThreads = concepts
                 .filter((c) => c.concept === concept && c.thread_id)
                 .map((c) => {
-                  const t = threads.find((t) => t.thread_id === c.thread_id);
+                  const t = threads.find((t) => t.id === c.thread_id);
                   return t?.label || c.thread_id?.slice(0, 8) + '…';
                 })
                 .filter((v, i, a) => a.indexOf(v) === i); // unique

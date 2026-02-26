@@ -161,5 +161,11 @@ class Settings:
     DEBUG_MODE: bool = _env_bool("DEBUG_MODE", False)
     STAGE_STREAMING: bool = _env_bool("STAGE_STREAMING", True)
 
+    # ── Baseline Mode (Experiments) ───────────────────────────────
+    # When True, disables all advanced subsystems (behavior engine,
+    # topic threading, research memory, concept linking) — reducing
+    # the pipeline to vanilla RAG for A/B comparison.
+    BASELINE_MODE: bool = _env_bool("BASELINE_MODE", False)
+
 
 settings = Settings()
