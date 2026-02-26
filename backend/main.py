@@ -719,6 +719,28 @@ def search_concepts(q: str, k: int = 10):
     return {"results": results, "count": len(results)}
 
 
+@app.get("/insights/search")
+def search_insights(
+    q: str,
+    k: int = 10,
+    type: str | None = None,
+    conversation_id: str | None = None,
+):
+    """Cross-thread semantic search over extracted insights.
+
+    Optional filters:
+        type — one of: decision, conclusion, hypothesis, open_question, observation
+        conversation_id — scope to a single conversation
+    """
+    if not DB_ENABLED:
+        raise HTTPException(503, "Database not available")
+    embedding = get_query_embedding(q)
+    results = query_db.search_similar_insights(
+        embedding, k=k, conversation_id=conversation_id, insight_type=type,
+    )
+    return {"results": results, "count": len(results)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 @app.get("/profile")

@@ -1523,31 +1523,41 @@ def get_insights_for_thread(thread_id: str, limit: int = 20) -> list[dict]:
             put_connection(conn)
 
 
-def search_similar_insights(embedding, k: int = 5, conversation_id: str | None = None) -> list[dict]:
-    """Semantic search across research insights. Optionally scoped to one conversation."""
+def search_similar_insights(
+    embedding, k: int = 5, conversation_id: str | None = None,
+    insight_type: str | None = None,
+) -> list[dict]:
+    """Semantic search across research insights.
+
+    Optionally scoped to one conversation and/or filtered by insight_type
+    (decision, conclusion, hypothesis, open_question, observation).
+    """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         emb = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+
+        # Build WHERE clauses dynamically
+        conditions = ["embedding IS NOT NULL"]
+        params: list = [emb]
         if conversation_id:
-            cur.execute("""
-                SELECT id, conversation_id, thread_id, insight_type,
-                       insight_text, confidence_score,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM research_insights
-                WHERE conversation_id = %s AND embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector LIMIT %s;
-            """, (emb, conversation_id, emb, k))
-        else:
-            cur.execute("""
-                SELECT id, conversation_id, thread_id, insight_type,
-                       insight_text, confidence_score,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM research_insights
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector LIMIT %s;
-            """, (emb, emb, k))
+            conditions.append("conversation_id = %s")
+            params.append(conversation_id)
+        if insight_type:
+            conditions.append("insight_type = %s")
+            params.append(insight_type)
+        where = " AND ".join(conditions)
+        params.extend([emb, k])
+
+        cur.execute(f"""
+            SELECT id, conversation_id, thread_id, insight_type,
+                   insight_text, confidence_score,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM research_insights
+            WHERE {where}
+            ORDER BY embedding <=> %s::vector LIMIT %s;
+        """, params)
         rows = cur.fetchall()
         cur.close()
         return [

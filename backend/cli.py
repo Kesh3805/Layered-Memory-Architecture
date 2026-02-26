@@ -123,10 +123,189 @@ def cmd_dev(args):
     )
 
 
+# ---------------------------------------------------------------------------
+#  Memory inspector commands
+# ---------------------------------------------------------------------------
+
+def _ensure_db():
+    """Initialize DB, exit if unavailable."""
+    import query_db
+    if not query_db.init_db():
+        logger.error("Database connection failed.  Is PostgreSQL running?")
+        sys.exit(1)
+    return query_db
+
+
+def cmd_memory(args):
+    """Route memory sub-commands: inspect | query."""
+    sub = getattr(args, "memory_command", None)
+    if sub == "inspect":
+        _cmd_memory_inspect(args)
+    elif sub == "query":
+        _cmd_memory_query(args)
+    else:
+        logger.error("Usage: python cli.py memory {inspect|query}")
+        sys.exit(1)
+
+
+def _cmd_memory_inspect(args):
+    """Print full cognitive state: threads, insights, concepts."""
+    query_db = _ensure_db()
+    cid = getattr(args, "conversation", None)
+    insights_only = getattr(args, "insights_only", False)
+
+    # Determine which conversations to inspect
+    if cid:
+        conv = query_db.get_conversation(cid)
+        if not conv:
+            logger.error(f"Conversation {cid} not found")
+            sys.exit(1)
+        conversations = [conv]
+    else:
+        conversations = query_db.list_conversations(limit=20)
+
+    if not conversations:
+        logger.info("No conversations found.")
+        return
+
+    bar = "\u2550" * 60
+    print(f"\n\u2550\u2550\u2550 Memory State {bar}\n")
+
+    for conv in conversations:
+        conv_id = conv["id"]
+        title = conv.get("title", "Untitled")
+        print(f"  Conversation: {conv_id[:12]}...  \"{title}\"")
+
+        threads = query_db.get_threads(conv_id)
+        if threads:
+            print(f"  Threads: {len(threads)} active\n")
+            for t in threads:
+                label = t.get("label") or "(unlabeled)"
+                mc = t.get("message_count", 0)
+                summary = t.get("summary") or "(no summary yet)"
+                tid = t["id"]
+                # Thread box
+                header = f" Thread: \"{label}\" " + "\u2500" * max(1, 48 - len(label)) + f" {mc} msgs "
+                print(f"  \u250C\u2500{header}\u2500\u2510")
+                # Summary (wrap at ~60 chars)
+                _print_wrapped(f"Summary: {summary}", indent=5, width=58)
+                # Insights for this thread
+                insights = query_db.get_insights_for_thread(tid, limit=10)
+                if insights:
+                    print(f"  \u2502  Insights:")
+                    for ins in insights:
+                        itype = ins["insight_type"]
+                        itext = ins["insight_text"]
+                        conf = ins.get("confidence_score", 0)
+                        # Truncate long text
+                        if len(itext) > 55:
+                            itext = itext[:52] + "..."
+                        print(f"  \u2502    [{itype:<15}] {itext} ({conf:.2f})")
+                print(f"  \u2514{'─' * 60}\u2518\n")
+        elif not insights_only:
+            print("  Threads: 0\n")
+
+        if insights_only:
+            all_insights = query_db.get_insights(conv_id, limit=30)
+            if all_insights:
+                print("  All Insights:")
+                for ins in all_insights:
+                    itype = ins["insight_type"]
+                    itext = ins["insight_text"]
+                    conf = ins.get("confidence_score", 0)
+                    tid_short = (ins.get("thread_id") or "")[:8]
+                    if len(itext) > 55:
+                        itext = itext[:52] + "..."
+                    print(f"    [{itype:<15}] {itext} ({conf:.2f})  thread:{tid_short}")
+                print()
+
+        # Concept links
+        concepts = query_db.get_concepts_for_conversation(conv_id)
+        if concepts:
+            print(f"  Concept Links: {len(concepts)}")
+            for c in concepts[:15]:
+                concept = c["concept"]
+                src = c.get("source_type", "")
+                print(f"    \"{concept}\" \u2190\u2192 {src}")
+            if len(concepts) > 15:
+                print(f"    ... and {len(concepts) - 15} more")
+            print()
+
+        print(f"{'─' * 65}\n")
+
+    print(f"{'═' * 65}\n")
+
+
+def _cmd_memory_query(args):
+    """Cross-thread semantic search over insights and concepts."""
+    query_db = _ensure_db()
+    from embeddings import get_query_embedding
+
+    q = args.query_text
+    if not q:
+        logger.error("Usage: python cli.py memory query \"your search text\"")
+        sys.exit(1)
+
+    embedding = get_query_embedding(q)
+    k = getattr(args, "k", 10)
+
+    print(f"\n─── Cross-Thread Search {'─' * 42}\n")
+    print(f"  Query: \"{q}\"\n")
+
+    # Insights
+    insight_type = getattr(args, "type", None)
+    insights = query_db.search_similar_insights(embedding, k=k, insight_type=insight_type)
+    if insights:
+        print("  Matching Insights:")
+        for i, ins in enumerate(insights, 1):
+            itype = ins["insight_type"]
+            itext = ins["insight_text"]
+            conf = ins.get("confidence_score", 0)
+            sim = ins.get("similarity", 0)
+            tid = (ins.get("thread_id") or "—")[:8]
+            if len(itext) > 60:
+                itext = itext[:57] + "..."
+            print(f"    {i}. [{itype}] \"{itext}\"")
+            print(f"       Thread: {tid} │ Confidence: {conf:.2f} │ Sim: {sim:.2f}")
+        print()
+    else:
+        print("  No matching insights found.\n")
+
+    # Concepts
+    concepts = query_db.search_similar_concepts(embedding, k=k)
+    if concepts:
+        print("  Matching Concepts:")
+        for i, c in enumerate(concepts, 1):
+            concept = c["concept"]
+            sim = c.get("similarity", 0)
+            src = c.get("source_type", "")
+            print(f"    {i}. \"{concept}\" ←→ {src} ({sim:.2f})")
+        print()
+    else:
+        print("  No matching concepts found.\n")
+
+    print(f"{'─' * 65}\n")
+
+
+def _print_wrapped(text: str, indent: int = 4, width: int = 60):
+    """Print text wrapped to *width* with leading indent inside a box."""
+    prefix = "  │" + " " * (indent - 3)
+    words = text.split()
+    line = ""
+    for w in words:
+        if len(line) + len(w) + 1 > width:
+            print(f"{prefix}{line}")
+            line = w
+        else:
+            line = f"{line} {w}" if line else w
+    if line:
+        print(f"{prefix}{line}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="rag",
-        description="RAG Chat — policy-driven conversational AI framework",
+        description="Stateful AI reference architecture — CLI tools",
     )
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -142,6 +321,20 @@ def main():
     p_dev.add_argument("--host", help="Bind host")
     p_dev.add_argument("--port", type=int, help="Bind port")
 
+    # memory — with sub-sub-commands
+    p_mem = sub.add_parser("memory", help="Inspect cognitive state or query across threads")
+    mem_sub = p_mem.add_subparsers(dest="memory_command", help="Memory commands")
+
+    p_inspect = mem_sub.add_parser("inspect", help="Print threads, insights, concepts")
+    p_inspect.add_argument("--conversation", "-c", help="Limit to one conversation ID")
+    p_inspect.add_argument("--insights-only", action="store_true", help="Show only insights")
+
+    p_query = mem_sub.add_parser("query", help="Cross-thread semantic search")
+    p_query.add_argument("query_text", help="Natural-language search query")
+    p_query.add_argument("--type", choices=["decision", "conclusion", "hypothesis", "open_question", "observation"],
+                         help="Filter by insight type")
+    p_query.add_argument("-k", type=int, default=10, help="Max results (default: 10)")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -150,6 +343,8 @@ def main():
         cmd_ingest(args)
     elif args.command == "dev":
         cmd_dev(args)
+    elif args.command == "memory":
+        cmd_memory(args)
     else:
         parser.print_help()
 
