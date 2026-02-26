@@ -42,7 +42,7 @@ Chatapp/
 ├── backend/                        # All Python server code
 │   ├── __init__.py                 # Package marker
 │   ├── main.py                     # FastAPI app + pipeline + all endpoints (~900 lines)
-│   ├── settings.py                 # Centralized env-driven config (~53 settings)
+│   ├── settings.py                 # Centralized env-driven config (~56 settings)
 │   ├── conversation_state.py       # Per-conversation behavioral state + precision modes
 │   ├── behavior_engine.py          # Behavioral routing layer (8 modes + precision_mode)
 │   ├── topic_threading.py          # Topic threading engine (EMA centroids, thread resolution)

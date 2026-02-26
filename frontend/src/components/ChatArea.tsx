@@ -1,17 +1,27 @@
 import { useRef, useEffect, useState } from 'react';
-import { PanelLeftOpen, ArrowDown, Bug } from 'lucide-react';
+import { PanelLeftOpen, ArrowDown, Bug, GitBranch, Brain } from 'lucide-react';
 import { useChatStore } from '../store';
 import type { useChatStream } from '../hooks/use-chat-stream';
 import AIMessage from './AIMessage';
 import InputArea from './InputArea';
 import WelcomeScreen from './WelcomeScreen';
+import { AIThreadPanel } from './ai';
 
 interface Props {
   chat: ReturnType<typeof useChatStream>;
 }
 
 export default function ChatArea({ chat }: Props) {
-  const { conversationId, sidebarOpen, toggleSidebar, debugMode, toggleDebugMode } = useChatStore();
+  const {
+    conversationId,
+    sidebarOpen,
+    toggleSidebar,
+    debugMode,
+    toggleDebugMode,
+    threadPanelOpen,
+    toggleThreadPanel,
+    toggleResearchDash,
+  } = useChatStore();
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -56,6 +66,29 @@ export default function ChatArea({ chat }: Props) {
           {conversationId ? 'Chat' : 'New Conversation'}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {conversationId && (
+            <>
+              <button
+                onClick={toggleResearchDash}
+                className="p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
+                  text-sidebar-muted hover:text-white hover:bg-sidebar-hover"
+                title="Research dashboard"
+              >
+                <Brain size={14} />
+              </button>
+              <button
+                onClick={toggleThreadPanel}
+                className={`p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
+                  ${threadPanelOpen
+                    ? 'bg-accent/15 text-accent border border-accent/30'
+                    : 'text-sidebar-muted hover:text-white hover:bg-sidebar-hover'}`}
+                title="Toggle thread panel"
+              >
+                <GitBranch size={14} />
+                {threadPanelOpen && <span className="text-[10px]">Threads</span>}
+              </button>
+            </>
+          )}
           <button
             onClick={toggleDebugMode}
             className={`p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
@@ -70,39 +103,53 @@ export default function ChatArea({ chat }: Props) {
         </div>
       </div>
 
-      {/* Messages */}
-      <div ref={containerRef} className="flex-1 overflow-y-auto">
-        {!hasMessages ? (
-          <WelcomeScreen onSuggestion={chat.send} />
-        ) : (
-          <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
-            {chat.messages.map((m) => (
-              <AIMessage
-                key={m.id}
-                message={m}
-                isStreaming={chat.isLoading && m.id === chat.messages[chat.messages.length - 1]?.id && m.role === 'assistant'}
-              />
-            ))}
-            <div ref={bottomRef} />
+      {/* Messages + Thread Panel */}
+      <div className="flex flex-1 min-h-0">
+        {/* Messages area */}
+        <div className="flex flex-col flex-1 min-w-0 relative">
+          <div ref={containerRef} className="flex-1 overflow-y-auto">
+            {!hasMessages ? (
+              <WelcomeScreen onSuggestion={chat.send} />
+            ) : (
+              <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
+                {chat.messages.map((m) => (
+                  <AIMessage
+                    key={m.id}
+                    message={m}
+                    isStreaming={chat.isLoading && m.id === chat.messages[chat.messages.length - 1]?.id && m.role === 'assistant'}
+                  />
+                ))}
+                <div ref={bottomRef} />
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* Scroll-to-bottom FAB */}
-      {showScrollBtn && (
-        <button
-          onClick={scrollToBottom}
-          title="Scroll to bottom"
-          className="absolute bottom-28 left-1/2 -translate-x-1/2 p-2 rounded-full
-                     bg-sidebar-hover/90 text-white shadow-lg hover:bg-sidebar-active
-                     transition-all z-10"
+          {/* Scroll-to-bottom FAB */}
+          {showScrollBtn && (
+            <button
+              onClick={scrollToBottom}
+              title="Scroll to bottom"
+              className="absolute bottom-28 left-1/2 -translate-x-1/2 p-2 rounded-full
+                         bg-sidebar-hover/90 text-white shadow-lg hover:bg-sidebar-active
+                         transition-all z-10"
+            >
+              <ArrowDown size={18} />
+            </button>
+          )}
+
+          {/* Input area */}
+          <InputArea chat={chat} />
+        </div>
+
+        {/* Thread panel (right sidebar) */}
+        <div
+          className={`${
+            threadPanelOpen ? 'w-72' : 'w-0'
+          } transition-all duration-200 flex-shrink-0 overflow-hidden border-l border-sidebar-border/50 bg-sidebar-bg`}
         >
-          <ArrowDown size={18} />
-        </button>
-      )}
-
-      {/* Input area */}
-      <InputArea chat={chat} />
+          <AIThreadPanel />
+        </div>
+      </div>
     </div>
   );
 }

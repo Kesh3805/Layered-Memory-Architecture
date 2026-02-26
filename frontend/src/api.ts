@@ -86,3 +86,79 @@ export async function deleteProfileEntry(id: number): Promise<void> {
   const res = await fetch(`${BASE}/profile/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('Failed to delete profile entry');
 }
+
+/* ── Threads ────────────────────────────────────────────────────────────── */
+
+export interface Thread {
+  thread_id: string;
+  conversation_id: string;
+  centroid: number[] | null;
+  message_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+  summary: string | null;
+  label: string | null;
+}
+
+export async function getThreads(conversationId: string): Promise<{ threads: Thread[] }> {
+  const res = await fetch(`${BASE}/conversations/${conversationId}/threads`);
+  if (!res.ok) throw new Error('Failed to get threads');
+  return res.json();
+}
+
+export async function getThread(conversationId: string, threadId: string): Promise<Thread> {
+  const res = await fetch(`${BASE}/conversations/${conversationId}/threads/${threadId}`);
+  if (!res.ok) throw new Error('Failed to get thread');
+  return res.json();
+}
+
+/* ── Research Insights ──────────────────────────────────────────────────── */
+
+export interface Insight {
+  id: number;
+  conversation_id: string;
+  thread_id: string | null;
+  insight_type: string;
+  content: string;
+  confidence: number;
+  created_at: string | null;
+}
+
+export interface ConceptLink {
+  id: number;
+  conversation_id: string;
+  concept: string;
+  thread_id: string | null;
+  created_at: string | null;
+}
+
+export async function getInsights(conversationId: string): Promise<{ insights: Insight[] }> {
+  const res = await fetch(`${BASE}/conversations/${conversationId}/insights`);
+  if (!res.ok) throw new Error('Failed to get insights');
+  return res.json();
+}
+
+export async function getConcepts(conversationId: string): Promise<{ concepts: ConceptLink[] }> {
+  const res = await fetch(`${BASE}/conversations/${conversationId}/concepts`);
+  if (!res.ok) throw new Error('Failed to get concepts');
+  return res.json();
+}
+
+export async function searchInsights(
+  q: string,
+  opts?: { k?: number; type?: string; conversation_id?: string },
+): Promise<{ results: Insight[] }> {
+  const params = new URLSearchParams({ q });
+  if (opts?.k) params.set('k', String(opts.k));
+  if (opts?.type) params.set('type', opts.type);
+  if (opts?.conversation_id) params.set('conversation_id', opts.conversation_id);
+  const res = await fetch(`${BASE}/insights/search?${params}`);
+  if (!res.ok) throw new Error('Failed to search insights');
+  return res.json();
+}
+
+export async function searchConcepts(q: string): Promise<{ concepts: ConceptLink[] }> {
+  const res = await fetch(`${BASE}/concepts/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) throw new Error('Failed to search concepts');
+  return res.json();
+}

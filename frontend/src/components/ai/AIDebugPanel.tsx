@@ -1,7 +1,8 @@
 /**
  * AI Debug Panel — raw system internals visible when debug mode is on.
  *
- * Shows: PolicyDecision JSON, injected prompt frames, raw retrieval info.
+ * Shows: PolicyDecision JSON, ThreadResolution JSON, research context,
+ * injected prompt frames, raw retrieval info.
  */
 
 import { useState } from 'react';
@@ -18,6 +19,9 @@ export default function AIDebugPanel({ metadata }: Props) {
     setExpanded((s) => ({ ...s, [key]: !s[key] }));
 
   const sections = [
+    { key: 'policy_decision', label: 'PolicyDecision', data: metadata.policy_decision },
+    { key: 'thread_resolution', label: 'ThreadResolution', data: metadata.thread_resolution },
+    { key: 'research_context', label: 'Research Context', data: metadata.research_context },
     { key: 'retrieval_info', label: 'Retrieval Info', data: metadata.retrieval_info },
     { key: 'query_tags', label: 'Query Tags', data: metadata.query_tags },
     { key: 'full_meta', label: 'Full Metadata', data: metadata },

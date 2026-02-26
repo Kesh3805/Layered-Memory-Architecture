@@ -335,7 +335,7 @@ Points: `before_generation` · `after_generation` · `policy_override` · `befor
 ```
 backend/
 ├── main.py                  # FastAPI app · 12-step pipeline · all endpoints
-├── settings.py              # 53 settings, env-overridable, frozen dataclass
+├── settings.py              # 56 settings, env-overridable, frozen dataclass
 ├── policy.py                # ★ Deterministic retrieval gating
 ├── topic_threading.py       # ★ EMA centroid thread resolution
 ├── research_memory.py       # ★ Insight extraction + concept linking
@@ -361,7 +361,7 @@ backend/
 
 knowledge/                   # Drop .txt/.md → auto-indexed
 frontend/                    # React 18 · Vite · Tailwind · Vercel AI SDK
-tests/                       # 297 tests · pure unit · no DB/LLM calls
+backend/tests/               # 297 tests · pure unit · no DB/LLM calls
 ```
 
 `★` = study these files first
@@ -370,7 +370,7 @@ tests/                       # 297 tests · pure unit · no DB/LLM calls
 
 ## Configuration
 
-All 53 settings in [`backend/settings.py`](backend/settings.py), driven by env vars. Key knobs:
+All 56 settings in [`backend/settings.py`](backend/settings.py), driven by env vars. Key knobs:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

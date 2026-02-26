@@ -11,17 +11,19 @@ Architecture layers:
   8. State Tracker  (conversation_state.py) — per-conversation behavioral state
   9. Behavior Engine(behavior_engine.py)    — behavioral routing layer
 
-Pipeline (shared by /chat and /chat/stream):
-  1. Embed query
-  2. Load state     (history + profile entries)
-  3. Classify intent
-  4. Topic gate     (prevents false continuation across domain jumps)
-  4b. Behavior engine (state tracking + behavioral routing)
-  5. Extract features + policy resolve + behavior overrides + hooks
-  6. History pruning
-  7. Selective retrieval  (driven by policy decision, modulated by behavior)
-  8. Generate response    (with behavior-aware prompt framing)
-  9. Persist         (DB writes + state persistence via worker)
+Pipeline — 12-step (shared by /chat and /chat/stream):
+  1.  Embed query                (parallel with step 2)
+  2.  Load DB state              (history + profile entries, parallel with step 1)
+  3.  Classify intent            (heuristic → LLM fallback)
+  4.  Topic gate                 (prevents false continuation across domain jumps)
+  5.  Behavior engine            (state tracking + behavioral routing)
+  6.  Topic threading            (EMA centroid thread resolution)
+  7.  Research context           (insight + concept retrieval)
+  8.  Policy resolve             (features → decision + behavior overrides + hooks)
+  9.  History pruning            (recency window + semantic retrieval)
+  10. Selective retrieval        (driven by policy decision, modulated by behavior)
+  11. Generate response          (behavior-aware prompt framing, stream or batch)
+  12. Background persist         (extract insights, link concepts, update centroid)
 """
 
 from __future__ import annotations
@@ -195,6 +197,9 @@ class PipelineResult:
     active_thread_id: str = ""
     thread_context: Optional[dict] = None
     research_context: Optional[dict] = None
+    # ── Typed decision objects for debug observability ─────────
+    thread_resolution: Optional[dict] = None
+    policy_decision: Optional[dict] = None
 
 
 def _profile_entries_to_text(entries: list[dict]) -> str:
@@ -248,7 +253,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                 logger.info(f"Topic gate: {topic_similarity:.3f} < threshold → general")
                 intent, confidence = "general", 0.7
 
-    # Step 4b: Behavior engine — conversational state + behavioral routing
+    # Step 5: Behavior engine — conversational state + behavioral routing
     behavior_decision = BehaviorDecision()  # default: standard mode
     if settings.BEHAVIOR_ENGINE_ENABLED:
         # Load / create conversation state
@@ -285,10 +290,11 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             f"skip_retrieval={behavior_decision.skip_retrieval}"
         )
 
-    # Step 4c: Topic threading — resolve which thread this message belongs to
+    # Step 6: Topic threading — resolve which thread this message belongs to
     active_thread_id = ""
     thread_context = None
     research_context_data = None
+    thread_result = None
     if settings.THREAD_ENABLED and DB_ENABLED:
         thread_result = resolve_thread(cid, query_embedding, db_enabled=DB_ENABLED)
         active_thread_id = thread_result.thread_id
@@ -300,11 +306,11 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
                 f"msgs={thread_result.message_count})"
             )
 
-    # Step 4d: Research context — gather related insights + concepts
+    # Step 7: Research context — gather related insights + concepts
     if settings.RESEARCH_INSIGHTS_ENABLED and DB_ENABLED:
         research_context_data = get_research_context(cid, query_embedding, active_thread_id, db_enabled=DB_ENABLED)
 
-    # Step 5: Context features + policy resolve
+    # Step 8: Context features + policy resolve
     features = extract_context_features(
         query=query,
         intent=intent,
@@ -315,7 +321,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     decision = BehaviorPolicy().resolve(features, intent)
     decision = Hooks.run_policy_override(features, decision)
 
-    # Step 5b: Apply behavior decision to policy overrides
+    # Step 8b: Apply behavior decision to policy overrides
     if settings.BEHAVIOR_ENGINE_ENABLED:
         if behavior_decision.skip_retrieval:
             decision.inject_rag = False
@@ -338,7 +344,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         f"greeting={decision.greeting_name or 'no'}"
     )
 
-    # Step 6: History pruning (conditional on policy)
+    # Step 9: History pruning (conditional on policy)
     curated_history = None
     if decision.use_curated_history and recent_messages:
         recency_slice = recent_messages[-_RECENCY_WINDOW:]
@@ -358,7 +364,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             f"(recency={len(recency_slice)}, semantic={len(semantic_extra)})"
         )
 
-    # Step 7: Selective retrieval (driven by policy decision)
+    # Step 10: Selective retrieval (driven by policy decision)
     rag_context = ""
     profile_context = ""
     similar_qa_context = ""
@@ -446,6 +452,26 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         active_thread_id=active_thread_id,
         thread_context=thread_context,
         research_context=research_context_data,
+        thread_resolution={
+            "thread_id": active_thread_id,
+            "is_new": thread_result.is_new,
+            "similarity": round(thread_result.similarity, 3),
+            "thread_label": thread_result.thread_label,
+            "message_count": thread_result.message_count,
+        } if thread_result and active_thread_id else None,
+        policy_decision={
+            "inject_profile": decision.inject_profile,
+            "inject_rag": decision.inject_rag,
+            "inject_qa_history": decision.inject_qa_history,
+            "use_curated_history": decision.use_curated_history,
+            "privacy_mode": decision.privacy_mode,
+            "greeting_name": decision.greeting_name,
+            "retrieval_route": decision.retrieval_route,
+            "rag_k": decision.rag_k,
+            "rag_min_similarity": decision.rag_min_similarity,
+            "qa_k": decision.qa_k,
+            "qa_min_similarity": decision.qa_min_similarity,
+        },
     ))
 
 
@@ -822,6 +848,10 @@ def chat(request: ChatRequest):
         "retrieval_info": p.retrieval_info,
         "query_tags": p.query_tags,
         "behavior_mode": p.behavior_mode,
+        "precision_mode": p.precision_mode,
+        "thread_resolution": p.thread_resolution,
+        "policy_decision": p.policy_decision,
+        "research_context": p.research_context,
     }
 
 
@@ -846,6 +876,10 @@ def chat_stream(request: ChatRequest):
     def event_stream():
         # ── Stage events (AI timeline) ────────────────────────────────────
         yield f'8:{json.dumps([{"stage": "classified", "intent": p.intent, "confidence": round(p.confidence, 2)}])}\n'
+
+        # Thread resolution stage
+        if p.thread_resolution:
+            yield f'8:{json.dumps([{"stage": "threaded", "thread_resolution": p.thread_resolution}])}\n'
 
         ri = p.retrieval_info
         if ri.get("num_docs") or ri.get("similar_queries") or ri.get("same_conv_qa") or ri.get("profile_injected"):
@@ -884,6 +918,10 @@ def chat_stream(request: ChatRequest):
             "retrieval_info": p.retrieval_info,
             "query_tags": p.query_tags,
             "behavior_mode": p.behavior_mode,
+            "precision_mode": p.precision_mode,
+            "thread_resolution": p.thread_resolution,
+            "policy_decision": p.policy_decision,
+            "research_context": p.research_context,
         }
         yield f"8:{json.dumps([meta])}\n"
 

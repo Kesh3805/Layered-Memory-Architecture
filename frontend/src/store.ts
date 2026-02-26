@@ -33,6 +33,18 @@ interface ChatStore {
   toggleDebugMode: () => void;
   commandPaletteOpen: boolean;
   setCommandPaletteOpen: (v: boolean) => void;
+
+  /* Thread & Research panels */
+  threadPanelOpen: boolean;
+  toggleThreadPanel: () => void;
+  researchDashOpen: boolean;
+  toggleResearchDash: () => void;
+  threads: api.Thread[];
+  insights: api.Insight[];
+  concepts: api.ConceptLink[];
+  refreshThreads: (conversationId: string) => Promise<void>;
+  refreshInsights: (conversationId: string) => Promise<void>;
+  refreshConcepts: (conversationId: string) => Promise<void>;
 }
 
 /* ── Store ───────────────────────────────────────────────────────────────── */
@@ -135,4 +147,42 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   commandPaletteOpen: false,
   setCommandPaletteOpen: (v) => set({ commandPaletteOpen: v }),
+
+  /* ── Thread & Research panels ── */
+  threadPanelOpen: false,
+  toggleThreadPanel: () => set((s) => ({ threadPanelOpen: !s.threadPanelOpen })),
+
+  researchDashOpen: false,
+  toggleResearchDash: () => set((s) => ({ researchDashOpen: !s.researchDashOpen })),
+
+  threads: [],
+  insights: [],
+  concepts: [],
+
+  refreshThreads: async (conversationId) => {
+    try {
+      const { threads } = await api.getThreads(conversationId);
+      set({ threads });
+    } catch (e) {
+      console.error('Failed to refresh threads', e);
+    }
+  },
+
+  refreshInsights: async (conversationId) => {
+    try {
+      const { insights } = await api.getInsights(conversationId);
+      set({ insights });
+    } catch (e) {
+      console.error('Failed to refresh insights', e);
+    }
+  },
+
+  refreshConcepts: async (conversationId) => {
+    try {
+      const { concepts } = await api.getConcepts(conversationId);
+      set({ concepts });
+    } catch (e) {
+      console.error('Failed to refresh concepts', e);
+    }
+  },
 }));

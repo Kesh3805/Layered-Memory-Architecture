@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import ProfileModal from './components/ProfileModal';
 import CommandPalette from './components/CommandPalette';
+import { AIResearchDashboard } from './components/ai';
 
 export default function App() {
   const {
@@ -51,6 +52,9 @@ export default function App() {
 
       {/* Profile modal */}
       {profileModalOpen && <ProfileModal />}
+
+      {/* Research dashboard overlay */}
+      <AIResearchDashboard />
 
       {/* Command palette */}
       <CommandPalette />

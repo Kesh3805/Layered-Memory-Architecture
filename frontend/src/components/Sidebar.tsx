@@ -52,6 +52,7 @@ export default function Sidebar() {
     debugMode,
     toggleDebugMode,
     setCommandPaletteOpen,
+    toggleResearchDash,
   } = useChatStore();
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -172,6 +173,14 @@ export default function Sidebar() {
         >
           <User size={16} />
           Profile & Memory
+        </button>
+        <button
+          onClick={toggleResearchDash}
+          className="flex items-center gap-2 w-full px-3 py-2 text-sm text-sidebar-muted
+                     rounded-lg hover:bg-sidebar-hover hover:text-sidebar-text transition-colors"
+        >
+          <Brain size={16} />
+          Research Dashboard
         </button>
         <button
           onClick={toggleDebugMode}

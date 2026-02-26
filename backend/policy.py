@@ -58,6 +58,7 @@ PROFILE_STATEMENT_PREFIXES = (
 class ContextFeatures:
     """Computed features for the current message — input to policy rules."""
 
+    query: str = ""                         # original user query
     is_greeting: bool = False
     references_profile: bool = False
     privacy_signal: bool = False
@@ -112,6 +113,7 @@ def extract_context_features(
                 break
 
     return ContextFeatures(
+        query=query,
         is_greeting=is_greeting,
         references_profile=references_profile,
         privacy_signal=(intent == "privacy"),

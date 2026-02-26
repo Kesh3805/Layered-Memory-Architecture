@@ -15,6 +15,7 @@ import {
   MessageSquare,
   User,
   Sparkles,
+  GitBranch,
 } from 'lucide-react';
 
 export interface StageEvent {
@@ -22,6 +23,7 @@ export interface StageEvent {
   intent?: string;
   confidence?: number;
   retrieval_info?: Record<string, any>;
+  thread_resolution?: Record<string, any>;
 }
 
 interface Props {
@@ -32,6 +34,7 @@ interface Props {
 
 const stageIcons: Record<string, React.ReactNode> = {
   classified:  <Brain size={11} />,
+  threaded:    <GitBranch size={11} />,
   retrieved:   <Search size={11} />,
   generating:  <Loader2 size={11} className="animate-spin" />,
   complete:    <CheckCircle2 size={11} />,
@@ -43,6 +46,7 @@ export default function AIStatusBar({ stages, isStreaming, onChipClick }: Props)
   // Extract retrieval info from the 'retrieved' or final annotation stage
   const retrievedStage = stages.find(s => s.stage === 'retrieved');
   const classifiedStage = stages.find(s => s.stage === 'classified');
+  const threadedStage = stages.find(s => s.stage === 'threaded');
   const ri = retrievedStage?.retrieval_info;
 
   return (
@@ -53,6 +57,15 @@ export default function AIStatusBar({ stages, isStreaming, onChipClick }: Props)
           icon={stageIcons.classified}
           label={`Classified: ${classifiedStage.intent}`}
           confidence={classifiedStage.confidence}
+          active
+        />
+      )}
+
+      {/* Threaded chip */}
+      {threadedStage?.thread_resolution && (
+        <Chip
+          icon={stageIcons.threaded}
+          label={`Threaded: ${threadedStage.thread_resolution.thread_label || threadedStage.thread_resolution.thread_id?.slice(0, 8) + '…'}`}
           active
         />
       )}
