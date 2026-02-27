@@ -38,6 +38,9 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).lower() in ("true", "1", "yes")
 
 
+_SECRET_KEYS = frozenset({"LLM_API_KEY", "DATABASE_URL", "POSTGRES_PASSWORD", "REDIS_URL"})
+
+
 # ── Settings ──────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -166,6 +169,17 @@ class Settings:
     # topic threading, research memory, concept linking) — reducing
     # the pipeline to vanilla RAG for A/B comparison.
     BASELINE_MODE: bool = _env_bool("BASELINE_MODE", False)
+
+    def __repr__(self) -> str:
+        """Safe repr that redacts secrets."""
+        parts: list[str] = []
+        for k in self.__dataclass_fields__:
+            v = getattr(self, k)
+            if k in _SECRET_KEYS and v:
+                parts.append(f"{k}='***'")
+            else:
+                parts.append(f"{k}={v!r}")
+        return f"Settings({', '.join(parts)})"
 
 
 settings = Settings()

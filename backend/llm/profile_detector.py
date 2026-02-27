@@ -72,6 +72,6 @@ def detect_profile_updates(user_message: str, assistant_response: str) -> list:
             logger.info("Profile updates: %s", [e["key"] for e in valid])
         return valid
 
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as e:
         logger.debug("No profile updates: %s", e)
         return []

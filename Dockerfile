@@ -17,7 +17,7 @@ RUN apt-get clean \
 
 
 
-COPY backend/requirements.txt ./requirements.txt
+COPY requirements.txt ./requirements.txt
 
 # Install CPU-only PyTorch first (smaller image, no CUDA)
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu

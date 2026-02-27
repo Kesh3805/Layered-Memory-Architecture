@@ -3,6 +3,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
+      # SECURITY: Override these in production via .env or Docker secrets.
       POSTGRES_USER: root
       POSTGRES_PASSWORD: password
       POSTGRES_DB: chatapp

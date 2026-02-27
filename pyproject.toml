@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=70", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "rag-chat"
-version = "4.1.0"
+version = "6.0.0"
 description = "Policy-driven, intent-gated RAG chat framework — pluggable LLM providers, pgvector, AI-native React UI."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,7 +45,6 @@ rag-chat = "backend.cli:main"
 line-length = 100
 target-version = "py312"
 select = ["E", "F", "I", "UP", "W"]
-ignore = ["E501"]
 
 [tool.ruff.per-file-ignores]
 "backend/llm/providers/*.py" = ["F401"]

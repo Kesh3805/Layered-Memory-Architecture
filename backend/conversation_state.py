@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +181,13 @@ _META_SIGNALS = [
 
 # ── Repetition detection ─────────────────────────────────────────────────
 
-# Max history length for pattern tracking
-_PATTERN_WINDOW = 10
+# Max history length for pattern tracking — use settings value if available,
+# fall back to a sensible default for testing without full app context.
+try:
+    from settings import settings as _settings
+    _PATTERN_WINDOW: int = _settings.BEHAVIOR_PATTERN_WINDOW
+except Exception:
+    _PATTERN_WINDOW = 10
 
 
 class StateTracker:

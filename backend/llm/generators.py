@@ -7,7 +7,7 @@ All generation functions delegate message assembly to
 
 import json
 import logging
-from typing import Generator, Optional
+from collections.abc import Generator
 
 from .client import completion, stream_text_deltas, MAX_RESPONSE_TOKENS, MAX_TITLE_TOKENS
 from .prompt_orchestrator import build_messages
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 def generate_response(
     user_query: str,
-    chat_history: Optional[list] = None,
+    chat_history: list | None = None,
     rag_context: str = "",
     profile_context: str = "",
     similar_qa_context: str = "",
-    curated_history: Optional[list] = None,
+    curated_history: list | None = None,
     privacy_mode: bool = False,
     greeting_name: str | None = None,
     behavior_context: str = "",
@@ -60,11 +60,11 @@ def generate_response(
 
 def generate_response_stream(
     user_query: str,
-    chat_history: Optional[list] = None,
+    chat_history: list | None = None,
     rag_context: str = "",
     profile_context: str = "",
     similar_qa_context: str = "",
-    curated_history: Optional[list] = None,
+    curated_history: list | None = None,
     privacy_mode: bool = False,
     greeting_name: str | None = None,
     behavior_context: str = "",

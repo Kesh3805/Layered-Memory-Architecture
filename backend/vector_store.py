@@ -8,7 +8,6 @@ over an in-memory list.  No FAISS dependency.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -49,7 +48,17 @@ def add_documents(text_chunks: list[str], source: str = "default") -> int:
     return len(text_chunks)
 
 
-def search(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> list[str]:
+def _cosine_similarities(query_emb: np.ndarray, embeddings: list[np.ndarray]) -> list[float]:
+    """Compute cosine similarity between a query and a list of embeddings."""
+    sims: list[float] = []
+    for emb in embeddings:
+        dot = float(np.dot(query_emb, emb))
+        norm = float(np.linalg.norm(query_emb) * np.linalg.norm(emb))
+        sims.append(dot / norm if norm > 0 else 0.0)
+    return sims
+
+
+def search(query: str, k: int | None = None, min_similarity: float = 0.0) -> list[str]:
     """Semantic search over indexed documents.  Returns chunk texts.
 
     Results below *min_similarity* are excluded to prevent irrelevant
@@ -69,16 +78,12 @@ def search(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> 
         if not _fallback_docs:
             return []
         qe = get_query_embedding(query)
-        sims = []
-        for emb in _fallback_embeddings:
-            dot = float(np.dot(qe, emb))
-            norm = float(np.linalg.norm(qe) * np.linalg.norm(emb))
-            sims.append(dot / norm if norm > 0 else 0.0)
+        sims = _cosine_similarities(qe, _fallback_embeddings)
         topk = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
         return [_fallback_docs[i] for i in topk if sims[i] >= min_similarity]
 
 
-def search_with_scores(query: str, k: Optional[int] = None, min_similarity: float = 0.0) -> list[tuple[str, float]]:
+def search_with_scores(query: str, k: int | None = None, min_similarity: float = 0.0) -> list[tuple[str, float]]:
     """Semantic search returning (text, similarity) tuples.
 
     Same as search() but preserves cosine similarity scores for
@@ -98,11 +103,7 @@ def search_with_scores(query: str, k: Optional[int] = None, min_similarity: floa
         if not _fallback_docs:
             return []
         qe = get_query_embedding(query)
-        sims = []
-        for emb in _fallback_embeddings:
-            dot = float(np.dot(qe, emb))
-            norm = float(np.linalg.norm(qe) * np.linalg.norm(emb))
-            sims.append(dot / norm if norm > 0 else 0.0)
+        sims = _cosine_similarities(qe, _fallback_embeddings)
         topk = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:k]
         return [(_fallback_docs[i], sims[i]) for i in topk if sims[i] >= min_similarity]
 
@@ -123,7 +124,7 @@ def count() -> int:
     return len(_fallback_docs)
 
 
-def clear(source: Optional[str] = None) -> None:
+def clear(source: str | None = None) -> None:
     """Remove indexed documents (optionally by source)."""
     if _db_available:
         import query_db

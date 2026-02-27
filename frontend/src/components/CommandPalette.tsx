@@ -7,10 +7,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Plus,
-  Search,
   User,
   Bug,
-  Trash2,
   MessageSquare,
   Command,
   X,

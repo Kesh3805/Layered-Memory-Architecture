@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
 
 from conversation_state import ConversationState
 
@@ -70,10 +69,10 @@ class BehaviorDecision:
     boost_retrieval: bool = False
     """If True, increase retrieval volume (more docs, lower floor)."""
 
-    rag_k_override: Optional[int] = None
+    rag_k_override: int | None = None
     """Override default rag_k if set."""
 
-    rag_min_similarity_override: Optional[float] = None
+    rag_min_similarity_override: float | None = None
     """Override default rag_min_similarity if set."""
 
     # ── Response modulation ───────────────────────────────────────────────
@@ -92,7 +91,7 @@ class BehaviorDecision:
     """Specific instruction override for special behavioral modes."""
 
     # ── Diagnosis ─────────────────────────────────────────────────────────
-    triggers: list = field(default_factory=list)
+    triggers: list[str] = field(default_factory=list)
     """List of trigger labels that caused this decision (for logging/debug)."""
 
 

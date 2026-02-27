@@ -12,7 +12,7 @@
  */
 
 import { useState, useCallback, useMemo } from 'react';
-import { Copy, Check, Bot, UserIcon, ChevronDown, Bug } from 'lucide-react';
+import { Copy, Check, Bot, UserIcon, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';

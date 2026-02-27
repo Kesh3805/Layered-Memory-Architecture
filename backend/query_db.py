@@ -11,7 +11,6 @@ Connection pooling via psycopg2 SimpleConnectionPool.
 DATABASE_URL env var takes priority over individual POSTGRES_* vars.
 """
 import math
-import os
 import uuid
 import logging
 from datetime import datetime, timezone

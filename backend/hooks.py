@@ -26,7 +26,10 @@ Load your hooks file at startup (e.g. import user_hooks in main.py).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 class Hooks:
@@ -107,7 +110,7 @@ class Hooks:
             try:
                 fn(pipeline_result, response)
             except Exception:
-                pass
+                logger.exception("Hook error in before_persist")
 
     # ── Utilities ─────────────────────────────────────────────────
 

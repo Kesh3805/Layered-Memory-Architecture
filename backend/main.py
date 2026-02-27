@@ -30,11 +30,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading as _threading
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -42,7 +43,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import query_db
 import vector_store
@@ -111,7 +112,6 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 #  Runtime config overrides (for experiments — does not touch Settings)
 # ---------------------------------------------------------------------------
-import threading as _threading
 
 class _RuntimeConfig:
     """Mutable runtime overrides for A/B experiments.
@@ -173,8 +173,8 @@ runtime_config = _RuntimeConfig()
 
 class ChatRequest(BaseModel):
     user_query: str
-    conversation_id: Optional[str] = None
-    tags: Optional[List[str]] = None
+    conversation_id: str | None = None
+    tags: list[str] | None = None
     user_id: str = settings.DEFAULT_USER_ID
 
 
@@ -232,7 +232,7 @@ _SIM_THRESHOLD = settings.SIMILARITY_THRESHOLD
 class PipelineResult:
     """Output of the shared pipeline — everything needed for generation."""
     query: str
-    cid: str
+    conversation_id: str
     query_embedding: Any
     intent: str
     confidence: float
@@ -240,10 +240,10 @@ class PipelineResult:
     rag_context: str = ""
     profile_context: str = ""
     similar_qa_context: str = ""
-    curated_history: Optional[list] = None
-    recent_messages: list = field(default_factory=list)
-    retrieval_info: dict = field(default_factory=dict)
-    query_tags: list = field(default_factory=list)
+    curated_history: list[dict[str, str]] | None = None
+    recent_messages: list[dict[str, str]] = field(default_factory=list)
+    retrieval_info: dict[str, Any] = field(default_factory=dict)
+    query_tags: list[str] = field(default_factory=list)
     privacy_mode: bool = False
     greeting_name: Optional[str] = None
     # ── Behavior engine outputs ───────────────────────────────────
@@ -255,11 +255,11 @@ class PipelineResult:
     response_length_hint: str = "normal"
     # ── Research engine outputs ─────────────────────────────
     active_thread_id: str = ""
-    thread_context: Optional[dict] = None
-    research_context: Optional[dict] = None
+    thread_context: dict[str, Any] | None = None
+    research_context: dict[str, Any] | None = None
     # ── Typed decision objects for debug observability ─────────
-    thread_resolution: Optional[dict] = None
-    policy_decision: Optional[dict] = None
+    thread_resolution: dict[str, Any] | None = None
+    policy_decision: dict[str, Any] | None = None
 
 
 def _profile_entries_to_text(entries: list[dict]) -> str:
@@ -275,12 +275,12 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     Returns a PipelineResult with all context assembled — ready for
     either generate_response() or generate_response_stream().
     """
-    cid = request.conversation_id or str(uuid.uuid4())
+    conv_id = request.conversation_id or str(uuid.uuid4())
     query = request.user_query
     query_tags = request.tags or query_db.infer_tags(query)
 
     # ── Telemetry ─────────────────────────────────────────────────────
-    tel = PipelineTelemetry(conversation_id=cid, query=query)
+    tel = PipelineTelemetry(conversation_id=conv_id, query=query)
     tel.mark("pipeline_start")
 
     # Steps 1+2 (parallel): embed query AND load DB state simultaneously.
@@ -292,7 +292,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_embed = pool.submit(get_query_embedding, query)
         if DB_ENABLED:
-            fut_history = pool.submit(query_db.get_recent_chat_messages, cid, settings.HISTORY_FETCH_LIMIT)
+            fut_history = pool.submit(query_db.get_recent_chat_messages, conv_id, settings.HISTORY_FETCH_LIMIT)
             fut_profile = pool.submit(query_db.get_user_profile, request.user_id)
     query_embedding = fut_embed.result()
     if DB_ENABLED:
@@ -312,7 +312,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     # Step 4: Topic similarity gate (only for continuation)
     topic_similarity = None
     if DB_ENABLED and intent == "continuation":
-        topic_vec = query_db.get_topic_vector(cid)
+        topic_vec = query_db.get_topic_vector(conv_id)
         if topic_vec is not None:
             q_arr = np.asarray(query_embedding, dtype=np.float32)
             dot = float(np.dot(q_arr, topic_vec))
@@ -330,13 +330,13 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     behavior_decision = BehaviorDecision()  # default: standard mode
     if runtime_config.behavior_enabled:
         # Load / create conversation state
-        conv_state = get_or_create_state(cid)
+        conv_state = get_or_create_state(conv_id)
         # Try to load from DB if state is fresh (message_count == 0) and DB has data
         if DB_ENABLED and conv_state.message_count == 0:
-            saved = query_db.get_conversation_state(cid)
+            saved = query_db.get_conversation_state(conv_id)
             if saved:
                 conv_state = ConversationState.from_dict(saved)
-                set_state(cid, conv_state)
+                set_state(conv_id, conv_state)
 
         # Extract recent user queries for repetition detection
         recent_user_queries = [
@@ -351,7 +351,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             confidence=confidence,
             recent_queries=recent_user_queries,
         )
-        set_state(cid, conv_state)
+        set_state(conv_id, conv_state)
 
         # Run behavior engine
         behavior_decision = BehaviorEngine.evaluate(conv_state, query, intent, confidence)
@@ -373,10 +373,10 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     research_context_data = None
     thread_result = None
     if runtime_config.threading_enabled and DB_ENABLED:
-        thread_result = resolve_thread(cid, query_embedding, db_enabled=DB_ENABLED)
+        thread_result = resolve_thread(conv_id, query_embedding, db_enabled=DB_ENABLED)
         active_thread_id = thread_result.thread_id
         if active_thread_id:
-            thread_context = get_thread_context(cid, active_thread_id)
+            thread_context = get_thread_context(conv_id, active_thread_id)
             logger.info(
                 f"Thread: {active_thread_id[:8]}… "
                 f"(new={thread_result.is_new}, sim={thread_result.similarity:.3f}, "
@@ -389,7 +389,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     # Step 7: Research context — gather related insights + concepts
     tel.mark("research_start")
     if runtime_config.research_enabled and DB_ENABLED:
-        research_context_data = get_research_context(cid, query_embedding, active_thread_id, db_enabled=DB_ENABLED)
+        research_context_data = get_research_context(conv_id, query_embedding, active_thread_id, db_enabled=DB_ENABLED)
         tel.record_research_context(research_context_data)
     tel.mark("research_end")
 
@@ -438,7 +438,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         semantic_extra: list = []
         if DB_ENABLED and intent == "continuation" and len(recent_messages) > _RECENCY_WINDOW:
             older_qa = query_db.get_similar_messages_in_conversation(
-                query_embedding, cid, k=_SEM_K, min_similarity=_SIM_THRESHOLD,
+                query_embedding, conv_id, k=_SEM_K, min_similarity=_SIM_THRESHOLD,
             )
             for item in older_qa:
                 if item["similarity"] >= _SIM_THRESHOLD:
@@ -481,7 +481,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             retrieval_info["rag_avg_similarity"] = sum(rag_similarities) / len(rag_similarities)
         if DB_ENABLED:
             similar_queries = query_db.retrieve_similar_queries(
-                query_embedding, k=decision.qa_k, conversation_id=cid,
+                query_embedding, k=decision.qa_k, conversation_id=conv_id,
                 current_tags=query_tags, min_similarity=decision.qa_min_similarity,
             )
             if similar_queries:
@@ -494,7 +494,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
 
     if decision.inject_qa_history and DB_ENABLED and len(recent_messages) > 2:
         same_conv_qa = query_db.retrieve_same_conversation_queries(
-            query_embedding, cid, k=3, min_similarity=_SIM_THRESHOLD,
+            query_embedding, conv_id, k=3, min_similarity=_SIM_THRESHOLD,
         )
         if same_conv_qa:
             lines = [f"- Q: {q['query'][:150]} → A: {(q['response'] or '')[:150]}" for q in same_conv_qa]
@@ -550,7 +550,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
 
     return Hooks.run_before_generation(PipelineResult(
         query=query,
-        cid=cid,
+        conversation_id=conv_id,
         query_embedding=query_embedding,
         intent=intent,
         confidence=confidence,
@@ -607,38 +607,38 @@ def persist_after_response(p: PipelineResult, response_text: str):
     def _work():
         try:
             # Ensure the conversation row exists before any FK-dependent writes
-            query_db.ensure_conversation_exists(p.cid)
+            query_db.ensure_conversation_exists(p.conversation_id)
 
-            existing = query_db.get_conversation_messages(p.cid, limit=1)
+            existing = query_db.get_conversation_messages(p.conversation_id, limit=1)
             is_first = len(existing) == 0
 
             query_db.store_query(
                 query_text=p.query,
                 embedding=p.query_embedding,
                 response_text=response_text,
-                conversation_id=p.cid,
+                conversation_id=p.conversation_id,
                 user_id=p.user_id,
                 tags=p.query_tags,
                 metadata={"intent": p.intent, "tags": p.query_tags},
             )
-            query_db.update_topic_vector(p.cid, p.query_embedding, alpha=settings.TOPIC_DECAY_ALPHA)
+            query_db.update_topic_vector(p.conversation_id, p.query_embedding, alpha=settings.TOPIC_DECAY_ALPHA)
             query_db.store_chat_message(
-                role="user", content=p.query, conversation_id=p.cid,
+                role="user", content=p.query, conversation_id=p.conversation_id,
                 user_id=p.user_id,
                 tags=p.query_tags, metadata={"intent": p.intent},
             )
             query_db.store_chat_message(
-                role="assistant", content=response_text, conversation_id=p.cid,
+                role="assistant", content=response_text, conversation_id=p.conversation_id,
                 user_id=p.user_id,
                 metadata={"intent": p.intent},
             )
-            query_db.increment_message_count(p.cid, 2)
-            query_db.touch_conversation(p.cid)
+            query_db.increment_message_count(p.conversation_id, 2)
+            query_db.touch_conversation(p.conversation_id)
 
             if is_first:
                 try:
                     title = generate_title(p.query)
-                    query_db.rename_conversation(p.cid, title)
+                    query_db.rename_conversation(p.conversation_id, title)
                     logger.info(f"Auto-titled: {title}")
                 except Exception as e:
                     logger.error(f"Title gen failed: {e}")
@@ -654,8 +654,8 @@ def persist_after_response(p: PipelineResult, response_text: str):
             # Persist conversation state for behavioral intelligence
             if runtime_config.behavior_enabled and settings.BEHAVIOR_STATE_PERSIST:
                 from conversation_state import get_or_create_state as _get_state
-                conv_st = _get_state(p.cid)
-                query_db.save_conversation_state(p.cid, conv_st.to_dict())
+                conv_st = _get_state(p.conversation_id)
+                query_db.save_conversation_state(p.conversation_id, conv_st.to_dict())
 
             # Research extraction: insights + concepts (async-safe, non-blocking)
             if runtime_config.research_enabled:
@@ -663,7 +663,7 @@ def persist_after_response(p: PipelineResult, response_text: str):
                     from llm.client import completion as _completion
                     insights = extract_insights(
                         p.query, response_text,
-                        conversation_id=p.cid,
+                        conversation_id=p.conversation_id,
                         thread_id=p.active_thread_id or None,
                     )
                 except Exception as e:
@@ -677,8 +677,8 @@ def persist_after_response(p: PipelineResult, response_text: str):
                         link_concepts(
                             concepts,
                             source_type="message",
-                            source_id=p.cid,
-                            conversation_id=p.cid,
+                            source_id=p.conversation_id,
+                            conversation_id=p.conversation_id,
                             thread_id=p.active_thread_id or None,
                         )
                 except Exception as e:
@@ -688,7 +688,7 @@ def persist_after_response(p: PipelineResult, response_text: str):
             if runtime_config.threading_enabled and p.active_thread_id:
                 try:
                     from thread_summarizer import maybe_summarize
-                    maybe_summarize(p.active_thread_id, p.cid)
+                    maybe_summarize(p.active_thread_id, p.conversation_id)
                 except Exception as e:
                     logger.error(f"Thread summary error: {e}")
         except Exception as e:
@@ -960,13 +960,13 @@ def chat(request: ChatRequest):
         )
     except Exception as e:
         logger.error(f"Generation error: {e}")
-        return {"response": f"Error: {e}", "conversation_id": p.cid}
+        return {"response": f"Error: {e}", "conversation_id": p.conversation_id}
 
     persist_after_response(p, str(response))
 
     return {
         "response": response,
-        "conversation_id": p.cid,
+        "conversation_id": p.conversation_id,
         "intent": p.intent,
         "confidence": round(p.confidence, 2),
         "retrieval_info": p.retrieval_info,

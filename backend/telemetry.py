@@ -37,7 +37,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from threading import Lock
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +66,13 @@ class PipelineTelemetry:
     original_intent: str = ""        # Pre-override intent
 
     # ── Topic gate ────────────────────────────────────────────────────────
-    topic_similarity: Optional[float] = None
+    topic_similarity: float | None = None
     topic_gate_fired: bool = False   # True if continuation → general
 
     # ── Behavior engine ───────────────────────────────────────────────────
     behavior_enabled: bool = False
     behavior_mode: str = "standard"
-    behavior_triggers: list = field(default_factory=list)
+    behavior_triggers: list[str] = field(default_factory=list)
     personality_mode: str = "default"
     precision_mode: str = "analytical"
     response_length_hint: str = "normal"
@@ -239,7 +239,7 @@ class PipelineTelemetry:
         self.gate_thread_attached = not thread_result.is_new and bool(thread_result.thread_id)
         self.gate_thread_created = thread_result.is_new
 
-    def record_research_context(self, research_data: Optional[dict]) -> None:
+    def record_research_context(self, research_data: dict | None) -> None:
         self.research_enabled = True
         if research_data:
             self.insights_retrieved = len(research_data.get("related_insights", []))

@@ -9,7 +9,6 @@ Pre-heuristic fast-paths (no LLM round-trip):
 
 import json
 import logging
-from typing import Optional
 
 import cache
 from .client import completion, MAX_CLASSIFIER_TOKENS
@@ -52,7 +51,7 @@ VALID_INTENTS = {"general", "continuation", "knowledge_base", "profile", "privac
 
 def classify_intent(
     user_query: str,
-    conversation_context: Optional[list] = None,
+    conversation_context: list | None = None,
 ) -> dict:
     """Classify user intent using pre-heuristics then LLM fallback.
 

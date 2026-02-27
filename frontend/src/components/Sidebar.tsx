@@ -17,7 +17,6 @@ import {
   BookOpen,
   Globe,
   HelpCircle,
-  Sparkles,
 } from 'lucide-react';
 import { useChatStore } from '../store';
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,17 @@ def put(key: str, value, ttl: int | None = None):
 
 # ── Intent classification cache ───────────────────────────────────────────
 
+_CLASSIFICATION_TTL = 1800  # 30 minutes
+
+
 def get_classification(query: str) -> dict | None:
     """Get cached intent classification result."""
     return get(_key("intent", query.strip().lower()[:200]))
 
 
-def set_classification(query: str, result: dict):
+def set_classification(query: str, result: dict) -> None:
     """Cache intent classification (30 min TTL)."""
-    put(_key("intent", query.strip().lower()[:200]), result, ttl=1800)
+    put(_key("intent", query.strip().lower()[:200]), result, ttl=_CLASSIFICATION_TTL)
 
 
 # ── Embedding cache ───────────────────────────────────────────────────────
@@ -88,7 +92,7 @@ def get_embedding(text: str) -> list | None:
     return get(_key("emb", text[:200]))
 
 
-def set_embedding(text: str, vector):
+def set_embedding(text: str, vector: Any) -> None:
     """Cache embedding vector."""
     vec_list = vector.tolist() if hasattr(vector, "tolist") else list(vector)
     put(_key("emb", text[:200]), vec_list)
