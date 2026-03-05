@@ -1,5 +1,5 @@
 /**
- * AIMessage — replaces the old Message component.
+ * AIMessage — premium message component with framer-motion animations.
  *
  * Surfaces backend intelligence:
  *  - Streaming phase indicators (classifying → retrieving → generating)
@@ -12,6 +12,7 @@
  */
 
 import { useState, useCallback, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Copy, Check, Bot, UserIcon, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
@@ -31,6 +32,11 @@ interface Props {
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
+
+const messageVariants = {
+  hidden: { opacity: 0, y: 12 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } },
+};
 
 export default function AIMessage({ message, isStreaming }: Props) {
   const [copied, setCopied] = useState(false);
@@ -81,29 +87,41 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
   if (isUser) {
     return (
-      <div className="group flex gap-3 py-4 fade-in">
-        <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs bg-accent/20 text-accent">
-          <UserIcon size={14} />
+      <motion.div
+        variants={messageVariants}
+        initial="hidden"
+        animate="visible"
+        className="group flex gap-3.5 py-5"
+      >
+        <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
+                        bg-accent/10 text-accent ring-1 ring-accent/20">
+          <UserIcon size={13} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-sidebar-muted mb-1 font-medium">You</div>
-          <p className="text-gray-200 whitespace-pre-wrap">{message.content}</p>
+          <div className="text-2xs text-zinc-500 mb-1.5 font-semibold uppercase tracking-wider">You</div>
+          <p className="text-zinc-200 whitespace-pre-wrap leading-relaxed">{message.content}</p>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
   return (
-    <div className="group flex gap-3 py-4 fade-in">
+    <motion.div
+      variants={messageVariants}
+      initial="hidden"
+      animate="visible"
+      className="group flex gap-3.5 py-5"
+    >
       {/* Avatar */}
-      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs bg-sidebar-hover text-gray-300">
-        <Bot size={14} />
+      <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
+                      bg-surface-1 text-zinc-400 ring-1 ring-surface-2">
+        <Bot size={13} />
       </div>
 
       {/* Content column */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs text-sidebar-muted font-medium">Assistant</span>
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-2xs text-zinc-500 font-semibold uppercase tracking-wider">Assistant</span>
           {intent && <AIIntentBadge intent={intent} confidence={confidence} />}
         </div>
 
@@ -118,13 +136,13 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
         {/* Streaming phase (before content) */}
         {streamingPhase && (
-          <div className="flex items-center gap-2 py-2 text-sm text-sidebar-muted">
+          <div className="flex items-center gap-2.5 py-3 text-sm text-zinc-500">
             <div className="flex gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
               <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
               <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
             </div>
-            {streamingPhase}
+            <span className="text-[13px]">{streamingPhase}</span>
           </div>
         )}
 
@@ -150,29 +168,21 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
         {/* Actions bar */}
         {!isStreaming && message.content && (
-          <div className="flex items-center gap-1.5 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              onClick={copyText}
-              className="flex items-center gap-1 px-2 py-1 text-xs text-sidebar-muted
-                         rounded hover:bg-sidebar-hover hover:text-white transition-colors"
-            >
+          <div className="flex items-center gap-1.5 mt-3 opacity-0 group-hover:opacity-100
+                          transition-opacity duration-200">
+            <ActionButton onClick={copyText}>
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copied' : 'Copy'}
-            </button>
+            </ActionButton>
 
-            {/* Memory toggle */}
             {ri && (
-              <button
-                onClick={() => toggleMemoryPanel(message.id)}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-sidebar-muted
-                           rounded hover:bg-sidebar-hover hover:text-white transition-colors"
-              >
+              <ActionButton onClick={() => toggleMemoryPanel(message.id)}>
                 <ChevronDown
                   size={12}
                   className={`transition-transform ${memoryPanelOpen[message.id] ? 'rotate-180' : ''}`}
                 />
                 Memory
-              </button>
+              </ActionButton>
             )}
 
             {/* Token estimate */}
@@ -181,21 +191,62 @@ export default function AIMessage({ message, isStreaming }: Props) {
         )}
 
         {/* Retrieval panel (toggle from status bar "Details" button) */}
-        {showRetrieval && ri && (
-          <AIRetrievalPanel info={{ ...ri, intent, confidence }} />
-        )}
+        <AnimatePresence>
+          {showRetrieval && ri && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <AIRetrievalPanel info={{ ...ri, intent, confidence }} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Full retrieval panel (toggle from "Memory" action) */}
-        {memoryPanelOpen[message.id] && ri && !showRetrieval && (
-          <AIRetrievalPanel info={{ ...ri, intent, confidence }} />
-        )}
+        <AnimatePresence>
+          {memoryPanelOpen[message.id] && ri && !showRetrieval && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <AIRetrievalPanel info={{ ...ri, intent, confidence }} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Debug panel — only in debug mode */}
-        {debugMode && hasMetadata && (
-          <AIDebugPanel metadata={metadata} />
-        )}
+        <AnimatePresence>
+          {debugMode && hasMetadata && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <AIDebugPanel metadata={metadata} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-    </div>
+    </motion.div>
+  );
+}
+
+/* ── Action button ──────────────────────────────────────────────────────── */
+
+function ActionButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1 px-2.5 py-1 text-xs text-zinc-500 rounded-lg
+                 hover:bg-surface-1 hover:text-zinc-300 transition-all duration-200"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -215,18 +266,19 @@ function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreElement>)
   const lang = childClass.replace('hljs language-', '').replace('language-', '') || 'code';
 
   return (
-    <div className="relative rounded-lg overflow-hidden my-3 border border-sidebar-border">
-      <div className="flex items-center justify-between px-4 py-1.5 bg-sidebar-bg text-xs text-sidebar-muted">
-        <span>{lang}</span>
+    <div className="relative rounded-xl overflow-hidden my-4 border border-surface-2/50 shadow-elevated">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface-0 text-xs text-zinc-500
+                      border-b border-surface-2/30">
+        <span className="font-mono text-2xs uppercase tracking-wider">{lang}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 hover:text-white transition-colors"
+          className="flex items-center gap-1.5 hover:text-zinc-300 transition-colors duration-200"
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
-          {copied ? 'Copied' : 'Copy'}
+          <span>{copied ? 'Copied' : 'Copy'}</span>
         </button>
       </div>
-      <pre {...props} className="!mt-0 !rounded-t-none">
+      <pre {...props} className="!mt-0 !rounded-t-none !border-0">
         {children}
       </pre>
     </div>

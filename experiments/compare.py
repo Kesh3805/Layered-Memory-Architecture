@@ -39,7 +39,9 @@ FULL_PIPELINE = ExperimentConfig(
     thread_enabled=True,
     research_insights=True,
     concept_linking=True,
-    description="All subsystems active",
+    hybrid_search=True,
+    reranker=True,
+    description="All subsystems active (hybrid search + reranker + behavior + threading)",
 )
 
 BASELINE_RAG = ExperimentConfig(
@@ -48,7 +50,31 @@ BASELINE_RAG = ExperimentConfig(
     thread_enabled=False,
     research_insights=False,
     concept_linking=False,
-    description="Vanilla RAG — classifier + retrieval only",
+    hybrid_search=False,
+    reranker=False,
+    description="Vanilla RAG — pure vector search, no advanced subsystems",
+)
+
+HYBRID_ONLY = ExperimentConfig(
+    name="hybrid_only",
+    behavior_engine=False,
+    thread_enabled=False,
+    research_insights=False,
+    concept_linking=False,
+    hybrid_search=True,
+    reranker=False,
+    description="Hybrid BM25 + vector (no reranker, no behavioral layers)",
+)
+
+HYBRID_PLUS_RERANKER = ExperimentConfig(
+    name="hybrid_plus_reranker",
+    behavior_engine=False,
+    thread_enabled=False,
+    research_insights=False,
+    concept_linking=False,
+    hybrid_search=True,
+    reranker=True,
+    description="Hybrid search + cross-encoder reranking (no behavioral layers)",
 )
 
 

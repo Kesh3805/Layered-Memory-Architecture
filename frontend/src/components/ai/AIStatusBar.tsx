@@ -33,25 +33,23 @@ interface Props {
 }
 
 const stageIcons: Record<string, React.ReactNode> = {
-  classified:  <Brain size={11} />,
-  threaded:    <GitBranch size={11} />,
-  retrieved:   <Search size={11} />,
-  generating:  <Loader2 size={11} className="animate-spin" />,
-  complete:    <CheckCircle2 size={11} />,
+  classified:  <Brain size={10} />,
+  threaded:    <GitBranch size={10} />,
+  retrieved:   <Search size={10} />,
+  generating:  <Loader2 size={10} className="animate-spin" />,
+  complete:    <CheckCircle2 size={10} />,
 };
 
 export default function AIStatusBar({ stages, isStreaming, onChipClick }: Props) {
   if (stages.length === 0) return null;
 
-  // Extract retrieval info from the 'retrieved' or final annotation stage
   const retrievedStage = stages.find(s => s.stage === 'retrieved');
   const classifiedStage = stages.find(s => s.stage === 'classified');
   const threadedStage = stages.find(s => s.stage === 'threaded');
   const ri = retrievedStage?.retrieval_info;
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap mb-2 fade-in">
-      {/* Classified chip */}
+    <div className="flex items-center gap-1 flex-wrap mb-2">
       {classifiedStage && (
         <Chip
           icon={stageIcons.classified}
@@ -61,7 +59,6 @@ export default function AIStatusBar({ stages, isStreaming, onChipClick }: Props)
         />
       )}
 
-      {/* Threaded chip */}
       {threadedStage?.thread_resolution && (
         <Chip
           icon={stageIcons.threaded}
@@ -70,39 +67,37 @@ export default function AIStatusBar({ stages, isStreaming, onChipClick }: Props)
         />
       )}
 
-      {/* Retrieval chips */}
       {ri?.num_docs != null && (
-        <Chip icon={<FileText size={11} />} label={`Retrieved: ${ri.num_docs} docs`} active />
+        <Chip icon={<FileText size={10} />} label={`Retrieved: ${ri.num_docs} docs`} active />
       )}
       {ri?.similar_queries != null && (
-        <Chip icon={<Database size={11} />} label={`Similar Q&A: ${ri.similar_queries}`} active />
+        <Chip icon={<Database size={10} />} label={`Similar Q&A: ${ri.similar_queries}`} active />
       )}
       {ri?.same_conv_qa != null && (
-        <Chip icon={<MessageSquare size={11} />} label={`Conv Q&A: ${ri.same_conv_qa}`} active />
+        <Chip icon={<MessageSquare size={10} />} label={`Conv Q&A: ${ri.same_conv_qa}`} active />
       )}
       {ri?.topic_similarity != null && (
-        <Chip icon={<Sparkles size={11} />} label={`Topic: ${ri.topic_similarity}`} active />
+        <Chip icon={<Sparkles size={10} />} label={`Topic: ${ri.topic_similarity}`} active />
       )}
       {ri?.profile_injected && (
-        <Chip icon={<User size={11} />} label="Profile injected" active />
+        <Chip icon={<User size={10} />} label="Profile injected" active />
       )}
       {ri?.greeting_personalized && (
-        <Chip icon={<User size={11} />} label="Personalized" active />
+        <Chip icon={<User size={10} />} label="Personalized" active />
       )}
 
-      {/* Generating / Complete indicator */}
       {isStreaming ? (
         <Chip icon={stageIcons.generating} label="Generating…" active pulse />
       ) : stages.length > 0 && (
         <Chip icon={stageIcons.complete} label="Complete" active />
       )}
 
-      {/* Memory detail toggle */}
       {ri && onChipClick && (
         <button
           onClick={onChipClick}
-          className="ml-1 px-2 py-0.5 text-[10px] rounded-full border border-sidebar-border
-                     text-sidebar-muted hover:text-white hover:border-accent/40 transition-colors"
+          className="ml-0.5 px-2 py-0.5 text-2xs rounded-full border border-surface-2
+                     text-zinc-500 hover:text-zinc-300 hover:border-accent/30
+                     hover:bg-accent/5 transition-all duration-200"
         >
           Details ›
         </button>
@@ -128,17 +123,17 @@ function Chip({
 }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium
-        border transition-all
+      className={`ai-chip inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium
+        border transition-all duration-200
         ${active
-          ? 'bg-sidebar-hover border-sidebar-border text-sidebar-text'
-          : 'bg-transparent border-sidebar-border/50 text-sidebar-muted'}
+          ? 'bg-surface-1/80 border-surface-2 text-zinc-400'
+          : 'bg-transparent border-surface-2/50 text-zinc-500'}
         ${pulse ? 'animate-pulse' : ''}`}
     >
       {icon}
       {label}
       {confidence != null && (
-        <span className="opacity-50">{Math.round(confidence * 100)}%</span>
+        <span className="opacity-40">{Math.round(confidence * 100)}%</span>
       )}
     </span>
   );

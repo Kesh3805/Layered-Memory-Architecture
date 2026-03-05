@@ -42,6 +42,9 @@ class Experiment(str, Enum):
     RESEARCH_MEMORY = "research_memory"
     FULL_PIPELINE = "full_pipeline"
     BASELINE_RAG = "baseline_rag"
+    HYBRID_SEARCH = "hybrid_search"
+    RERANKER = "reranker"
+    RETRIEVAL_QUALITY = "retrieval_quality"
 
 
 @dataclass
@@ -52,6 +55,8 @@ class ExperimentConfig:
     thread_enabled: bool = True
     research_insights: bool = True
     concept_linking: bool = True
+    hybrid_search: bool = True
+    reranker: bool = True
     topic_continuation_threshold: float = 0.35
     thread_attach_threshold: float = 0.55
     description: str = ""
@@ -62,6 +67,8 @@ class ExperimentConfig:
             "THREAD_ENABLED": str(self.thread_enabled).lower(),
             "RESEARCH_INSIGHTS_ENABLED": str(self.research_insights).lower(),
             "CONCEPT_LINKING_ENABLED": str(self.concept_linking).lower(),
+            "HYBRID_SEARCH_ENABLED": str(self.hybrid_search).lower(),
+            "RERANKER_ENABLED": str(self.reranker).lower(),
             "TOPIC_CONTINUATION_THRESHOLD": str(self.topic_continuation_threshold),
             "THREAD_ATTACH_THRESHOLD": str(self.thread_attach_threshold),
         }
@@ -140,7 +147,75 @@ EXPERIMENT_ARMS: dict[Experiment, list[ExperimentConfig]] = {
             thread_enabled=False,
             research_insights=False,
             concept_linking=False,
+            hybrid_search=False,
+            reranker=False,
             description="Standard RAG — no behavioral/threading/research layers",
+        ),
+    ],
+    Experiment.HYBRID_SEARCH: [
+        ExperimentConfig(
+            name="vector_only",
+            hybrid_search=False,
+            reranker=False,
+            description="Pure vector search (pgvector cosine) — no BM25, no reranker",
+        ),
+        ExperimentConfig(
+            name="hybrid_bm25_vector",
+            hybrid_search=True,
+            reranker=False,
+            description="Hybrid BM25 + vector via Reciprocal Rank Fusion",
+        ),
+    ],
+    Experiment.RERANKER: [
+        ExperimentConfig(
+            name="without_reranker",
+            hybrid_search=True,
+            reranker=False,
+            description="Hybrid search WITHOUT cross-encoder reranking",
+        ),
+        ExperimentConfig(
+            name="with_reranker",
+            hybrid_search=True,
+            reranker=True,
+            description="Hybrid search WITH cross-encoder reranking (ms-marco-MiniLM-L-6-v2)",
+        ),
+    ],
+    Experiment.RETRIEVAL_QUALITY: [
+        ExperimentConfig(
+            name="vector_baseline",
+            behavior_engine=False,
+            thread_enabled=False,
+            research_insights=False,
+            concept_linking=False,
+            hybrid_search=False,
+            reranker=False,
+            description="Pure vector search — baseline for retrieval quality comparison",
+        ),
+        ExperimentConfig(
+            name="hybrid_only",
+            behavior_engine=False,
+            thread_enabled=False,
+            research_insights=False,
+            concept_linking=False,
+            hybrid_search=True,
+            reranker=False,
+            description="Hybrid BM25 + vector — isolates hybrid search contribution",
+        ),
+        ExperimentConfig(
+            name="hybrid_plus_reranker",
+            behavior_engine=False,
+            thread_enabled=False,
+            research_insights=False,
+            concept_linking=False,
+            hybrid_search=True,
+            reranker=True,
+            description="Hybrid + cross-encoder reranking — full retrieval pipeline",
+        ),
+        ExperimentConfig(
+            name="full_pipeline",
+            hybrid_search=True,
+            reranker=True,
+            description="All subsystems active — production config",
         ),
     ],
 }
@@ -273,12 +348,15 @@ class ExperimentRunner:
                     "thread_enabled": config.thread_enabled,
                     "research_insights": config.research_insights,
                     "concept_linking": config.concept_linking,
+                    "hybrid_search": config.hybrid_search,
+                    "reranker": config.reranker,
                 },
                 timeout=5,
             )
             logger.info(f"  Applied config: behavior={config.behavior_engine} "
                         f"thread={config.thread_enabled} research={config.research_insights} "
-                        f"concepts={config.concept_linking}")
+                        f"concepts={config.concept_linking} "
+                        f"hybrid={config.hybrid_search} reranker={config.reranker}")
         except Exception as e:
             logger.warning(f"Failed to apply experiment config: {e}")
 

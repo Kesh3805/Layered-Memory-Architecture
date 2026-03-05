@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useChatStore } from './store';
 import { useChatStream } from './hooks/use-chat-stream';
 import Sidebar from './components/Sidebar';
@@ -37,21 +38,26 @@ export default function App() {
   }, [commandPaletteOpen, setCommandPaletteOpen]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-chat-bg">
+    <div className="flex h-screen overflow-hidden bg-chat-bg relative noise-overlay">
+      {/* Ambient glow */}
+      <div className="ambient-glow" />
+
       {/* Sidebar */}
-      <div
-        className={`${
-          sidebarOpen ? 'w-64' : 'w-0'
-        } transition-all duration-200 flex-shrink-0 overflow-hidden`}
+      <motion.div
+        animate={{ width: sidebarOpen ? 272 : 0 }}
+        transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+        className="flex-shrink-0 overflow-hidden relative z-10"
       >
         <Sidebar />
-      </div>
+      </motion.div>
 
       {/* Main chat area */}
       <ChatArea chat={chat} />
 
       {/* Profile modal */}
-      {profileModalOpen && <ProfileModal />}
+      <AnimatePresence>
+        {profileModalOpen && <ProfileModal />}
+      </AnimatePresence>
 
       {/* Research dashboard overlay */}
       <AIResearchDashboard />

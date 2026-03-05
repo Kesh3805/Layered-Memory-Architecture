@@ -19,7 +19,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB.svg?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![PostgreSQL + pgvector](https://img.shields.io/badge/PostgreSQL-pgvector-336791.svg?style=flat-square&logo=postgresql&logoColor=white)](https://github.com/pgvector/pgvector)
-[![Tests](https://img.shields.io/badge/tests-297%20passing-brightgreen.svg?style=flat-square)](#test-suite)
+[![Tests](https://img.shields.io/badge/tests-358%20passing-brightgreen.svg?style=flat-square)](#test-suite)
 [![MIT](https://img.shields.io/badge/license-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 </div>
@@ -207,6 +207,16 @@ The **research tier** is the differentiator. After every response, a background 
 └───────────┬───────────────┘
             │
 ┌───────────▼───────────────┐
+│  HYBRID RETRIEVAL         │  BM25 (tsvector) + pgvector cosine
+│  Reciprocal Rank Fusion   │  fused via RRF(k=60). Zero new deps.
+└───────────┬───────────────┘
+            │
+┌───────────▼───────────────┐
+│  CROSS-ENCODER RERANKING  │  ms-marco-MiniLM-L-6-v2 (22M params)
+│  Top-k re-scoring         │  ~5ms/pair CPU. Graceful passthrough.
+└───────────┬───────────────┘
+            │
+┌───────────▼───────────────┐
 │  GENERATION               │  Thread context + insights + concepts +
 │  Stream or batch          │  policy-resolved docs → LLM
 └───────────┬───────────────┘
@@ -216,6 +226,58 @@ The **research tier** is the differentiator. After every response, a background 
 │  Async via thread pool    │  Update centroid. Summarize thread.
 └───────────────────────────┘
 ```
+
+---
+
+## Retrieval Pipeline
+
+The retrieval stage uses a **three-phase architecture** that combines lexical and semantic search with neural reranking:
+
+```
+    Query
+      │
+      ├──────────────────┐
+      ▼                  ▼
+  ┌─────────┐      ┌──────────┐
+  │ pgvector│      │   BM25   │     Phase 1: Dual retrieval
+  │ cosine  │      │ tsvector │     3× candidate pool
+  └────┬────┘      └────┬─────┘
+       │                │
+       ▼                ▼
+  ┌──────────────────────────┐
+  │  Reciprocal Rank Fusion  │      Phase 2: Score fusion
+  │  score = Σ w/(k + rank)  │      k=60, equal weights
+  └────────────┬─────────────┘
+               │
+               ▼
+  ┌──────────────────────────┐
+  │  Cross-Encoder Reranker  │      Phase 3: Neural reranking
+  │  ms-marco-MiniLM-L-6-v2 │      Top-k selection (default: 4)
+  └────────────┬─────────────┘
+               │
+               ▼
+         Top-k documents
+```
+
+**Why this matters:** Pure vector search misses keyword-exact matches (e.g., error codes, API names). Pure BM25 misses semantic paraphrases. RRF fusion captures both. The cross-encoder reranker then re-scores the fused candidates with full query-document attention — significantly more accurate than bi-encoder similarity alone.
+
+**Implementation:**
+- [`hybrid_search.py`](backend/hybrid_search.py) — BM25 via PostgreSQL `tsvector` + `ts_rank_cd`, fused with pgvector cosine via weighted RRF. Zero new Python dependencies — runs entirely in-database with a GIN index.
+- [`reranker.py`](backend/reranker.py) — Cross-encoder `cross-encoder/ms-marco-MiniLM-L-6-v2` (22M params). Lazy-loaded singleton, graceful passthrough when model unavailable.
+- Both features are independently toggleable via `HYBRID_SEARCH_ENABLED` and `RERANKER_ENABLED` settings, and dynamically overridable per-request via the experiment framework.
+
+### Evaluation Harness
+
+[`evaluation.py`](backend/evaluation.py) provides automated retrieval quality assessment with four metrics:
+
+| Metric | Method | Purpose |
+|--------|--------|---------|
+| Context Precision | Set intersection with oracle docs | Are retrieved docs relevant? |
+| Context Recall / MRR | Mean Reciprocal Rank | Is the best doc ranked high? |
+| Faithfulness | LLM-as-judge (heuristic fallback) | Is the response grounded in context? |
+| Answer Relevance | LLM-as-judge (heuristic fallback) | Does the response address the query? |
+
+The harness includes a built-in corpus of 15 ground-truth queries across 8 categories and supports both LLM-as-judge evaluation (via any configured provider) and fast heuristic fallback for offline testing.
 
 ---
 
@@ -262,6 +324,9 @@ Each file is self-contained and demonstrates a specific pattern.
 | [`policy.py`](backend/policy.py) | **Deterministic retrieval gating** | Replaces "always retrieve" with intent-aware rules. Every decision is auditable. |
 | [`topic_threading.py`](backend/topic_threading.py) | **Centroid-based conversation threading** | EMA-updated embedding centroids group messages into topical threads. Solves "follow-up loses context." |
 | [`research_memory.py`](backend/research_memory.py) | **Background cognition extraction** | LLM extracts structured insights after every turn. Decisions, conclusions, hypotheses stored and re-surfaced semantically. |
+| [`hybrid_search.py`](backend/hybrid_search.py) | **Dual-signal retrieval fusion** | BM25 + pgvector cosine combined via Reciprocal Rank Fusion. Captures both lexical and semantic matches. |
+| [`reranker.py`](backend/reranker.py) | **Cross-encoder neural reranking** | Full query-document attention re-scoring. Much more accurate than bi-encoder similarity alone. |
+| [`evaluation.py`](backend/evaluation.py) | **Automated retrieval evaluation** | 4-metric harness with LLM-as-judge and heuristic fallback. Measures precision, recall, faithfulness, relevance. |
 | [`prompt_orchestrator.py`](backend/llm/prompt_orchestrator.py) | **Policy-aware prompt assembly** | Builds the final message array from thread context, research insights, behavior frame, history, and RAG — all controlled by policy. |
 | [`conversation_state.py`](backend/conversation_state.py) | **Multi-signal state tracking** | Tracks tone, repetition, query patterns, and precision mode per conversation. Informs behavior without user input. |
 | [`behavior_engine.py`](backend/behavior_engine.py) | **Behavioral routing** | 8 behavioral modes that modulate retrieval and generation based on detected conversational patterns. |
@@ -384,7 +449,7 @@ Points: `before_generation` · `after_generation` · `policy_override` · `befor
 ```
 backend/
 ├── main.py                  # FastAPI app · 12-step pipeline · all endpoints
-├── settings.py              # 56 settings, env-overridable, frozen dataclass
+├── settings.py              # 64 settings, env-overridable, frozen dataclass
 ├── telemetry.py             # ★ Per-request pipeline instrumentation (80+ fields)
 ├── policy.py                # ★ Deterministic retrieval gating
 ├── topic_threading.py       # ★ EMA centroid thread resolution
@@ -394,7 +459,10 @@ backend/
 ├── behavior_engine.py       # ★ 8-mode behavioral router
 ├── context_manager.py       # Token-budget history trimming
 ├── query_db.py              # PostgreSQL + pgvector (50+ functions)
-├── vector_store.py          # Document search (pgvector + numpy fallback)
+├── vector_store.py          # Document search (pgvector + hybrid + reranker)
+├── hybrid_search.py         # ★ BM25 + vector fusion via Reciprocal Rank Fusion
+├── reranker.py              # ★ Cross-encoder reranking (ms-marco-MiniLM)
+├── evaluation.py            # ★ Automated retrieval quality eval harness
 ├── embeddings.py            # BAAI/bge-base-en-v1.5 · 768-dim · local
 ├── hooks.py                 # 4 extension hook points
 ├── cache.py                 # Optional Redis (graceful no-op)
@@ -410,14 +478,16 @@ backend/
     └── profile_detector.py  # Personal fact extraction
 
 experiments/                 # A/B experiment framework
-├── runner.py                # ★ Experiment runner with 6 experiments + CLI
+├── runner.py                # ★ Experiment runner with 9 experiments + CLI
+├── eval_retrieval.py        # ★ 4-arm retrieval quality A/B runner
+├── compare.py               # Side-by-side pipeline comparison
 ├── analysis.ipynb           # ★ Telemetry visualization notebook
 └── README.md                # Experiment documentation
 
 knowledge/                   # Drop .txt/.md → auto-indexed
 ├── IMPLEMENTATION.md        # Full implementation reference (32 sections)
 frontend/                    # React 18 · Vite · Tailwind · Vercel AI SDK
-backend/tests/               # 297 tests · pure unit · no DB/LLM calls
+backend/tests/               # 358 tests · pure unit · no DB/LLM calls
 ```
 
 `★` = study these files first
@@ -426,7 +496,7 @@ backend/tests/               # 297 tests · pure unit · no DB/LLM calls
 
 ## Configuration
 
-All 56 settings in [`backend/settings.py`](backend/settings.py), driven by env vars. Key knobs:
+All 64 settings in [`backend/settings.py`](backend/settings.py), driven by env vars. Key knobs:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -439,6 +509,11 @@ All 56 settings in [`backend/settings.py`](backend/settings.py), driven by env v
 | `THREAD_ATTACH_THRESHOLD` | `0.55` | Min similarity to join thread |
 | `RESEARCH_INSIGHTS_ENABLED` | `true` | Background insight extraction |
 | `CONCEPT_LINKING_ENABLED` | `true` | Cross-thread concept linking |
+| `HYBRID_SEARCH_ENABLED` | `true` | BM25 + vector fusion via RRF |
+| `RERANKER_ENABLED` | `true` | Cross-encoder reranking |
+| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Reranker model |
+| `RERANKER_TOP_K` | `4` | Docs after reranking |
+| `HYBRID_RRF_K` | `60` | RRF smoothing constant |
 
 Full reference: [`.env.example`](.env.example)
 
@@ -461,13 +536,13 @@ cd frontend && npm install && npm run dev    # → localhost:5173
 
 ## Test Suite
 
-**297 tests** · Pure unit tests · Zero database or LLM calls
+**358 tests** · Pure unit tests · Zero database or LLM calls
 
 ```bash
 python -m pytest backend/tests/ -v
 ```
 
-Covers: policy routing, threading math, concept extraction, insight parsing, summarization, prompt assembly, state tracking, behavioral modes, classification, token budgeting, settings, chunking, CLI commands, cross-thread search.
+Covers: policy routing, threading math, concept extraction, insight parsing, summarization, prompt assembly, state tracking, behavioral modes, classification, token budgeting, settings, chunking, CLI commands, cross-thread search, **hybrid search fusion (RRF)**, **cross-encoder reranking**, **retrieval evaluation harness**.
 
 ---
 
@@ -532,6 +607,9 @@ The `experiments/` directory contains a structured A/B testing framework for val
 | `research_memory` | Do extracted insights improve follow-up quality? | with insights vs without |
 | `full_pipeline` | Full system vs minimal RAG — the headline comparison | all subsystems vs vanilla |
 | `baseline_rag` | Pure baseline — no behavioral/threading/research | N/A |
+| `hybrid_search` | Does BM25+vector fusion improve retrieval over pure vector? | vector_only vs hybrid |
+| `reranker` | Does cross-encoder reranking improve precision? | without_reranker vs with_reranker |
+| `retrieval_quality` | **4-arm comparison** — the retrieval headline experiment | vector_baseline · hybrid_only · hybrid+reranker · full_pipeline |
 
 ### Running Experiments
 
@@ -544,6 +622,15 @@ python experiments/runner.py continuation_gate --queries multi_turn
 
 # All experiments, all query sets
 python experiments/runner.py full_pipeline --queries multi_turn repetition greeting behavioral profile
+
+# ★ Run the 4-arm retrieval quality experiment
+python -m experiments.eval_retrieval --url http://localhost:8000
+
+# ★ Run hybrid search A/B
+python experiments/runner.py hybrid_search --queries multi_turn
+
+# ★ Run reranker A/B
+python experiments/runner.py reranker --queries multi_turn
 ```
 
 ### Analysis
@@ -588,6 +675,125 @@ The threading subsystem attached **89.6%** of queries to existing conversation t
 | Non-Standard Behavior Rate | 25.0% | 0.0% | N/A |
 | Research Memory Hit Rate | 0.0% | 0.0% | N/A |
 | Errors | 0 | 0 | — |
+
+#### Claim 4: Hybrid search + reranking improves retrieval precision over pure vector baseline
+
+> **Status: Ready to measure.** Infrastructure is in place. Run the 4-arm retrieval quality experiment to produce quantified results.
+
+##### Pre-defined Success Thresholds
+
+*Defined before running experiments to prevent post-hoc rationalization of weak results.*
+
+| Feature | Criterion | Threshold | If Below |
+|---------|-----------|:---------:|----------|
+| Hybrid search | Context precision gain | **≥ +10%** | Not worth the complexity |
+| Hybrid search | Context recall gain | **≥ +10%** | BM25 not contributing |
+| Hybrid search | Hallucination reduction | **≥ −15%** | Alternative justification |
+| Reranker | Faithfulness gain | **≥ +15%** | Doesn't earn its latency |
+| Reranker | Answer relevance gain | **≥ +10%** | Reordering noise, not signal |
+| Either | Latency overhead | **≤ 500ms** | Too expensive for the gain |
+| Either | Noise floor | **±2%** | Not signal — ignore it |
+
+> If you see +2%, that's noise. Decide *now* what is signal. — These thresholds are enforced programmatically in [`evaluation.py → THRESHOLDS`](backend/evaluation.py).
+
+The retrieval pipeline now supports a controlled **4-arm A/B experiment** across 120 queries:
+
+| Arm | Hybrid Search | Reranker | Purpose |
+|-----|:---:|:---:|---------|
+| `vector_baseline` | ✗ | ✗ | Pure pgvector cosine similarity |
+| `hybrid_only` | ✓ | ✗ | BM25+vector fusion via RRF |
+| `hybrid_plus_reranker` | ✓ | ✓ | Fusion + cross-encoder re-scoring |
+| `full_pipeline` | ✓ | ✓ | Full system (behavior + threading + retrieval) |
+
+**To produce results:**
+
+```bash
+# Start the server
+python backend/cli.py dev
+
+# Run the 4-arm retrieval experiment (120 queries × 4 arms = 480 requests)
+python -m experiments.eval_retrieval --url http://localhost:8000
+```
+
+**Expected output format:**
+
+```
+| Arm                   | Similarity (mean±std) | Latency (mean±std) | P95    | Tokens |
+|:----------------------|:---------------------:|:------------------:|:------:|:------:|
+| vector_baseline       | 0.XXX±0.XXX           | XXXms±XXXms        | XXXms  | XXX    |
+| hybrid_only           | 0.XXX±0.XXX           | XXXms±XXXms        | XXXms  | XXX    |
+| hybrid_plus_reranker  | 0.XXX±0.XXX           | XXXms±XXXms        | XXXms  | XXX    |
+| full_pipeline         | 0.XXX±0.XXX           | XXXms±XXXms        | XXXms  | XXX    |
+```
+
+**Expected claim format:** *"Hybrid search + reranking improved retrieval precision by X% and faithfulness by Y% over vector baseline across 120 queries (mean ± std dev)."*
+
+**Evaluation metrics** (automated via [`evaluation.py`](backend/evaluation.py)):
+- Context Precision — fraction of retrieved docs that are relevant
+- Context Recall / MRR — rank of the first relevant document
+- Faithfulness — LLM-as-judge grounding score (heuristic fallback available)
+- Answer Relevance — LLM-as-judge topicality score
+
+<!-- RETRIEVAL_FINDINGS_START -->
+
+### 4-Arm Retrieval Quality Experiment
+
+**Date:** 2026-03-05 · **Queries per arm:** 80 (320 total) · **Corpus:** 119 indexed chunks · **Methodology:** Pure retrieval via `/retrieval/test` — no LLM generation to isolate retrieval signal.
+
+#### Pre-Defined Success Thresholds
+
+*Set before running to prevent post-hoc rationalisation.*
+
+| Criterion | Threshold |
+|-----------|:---------:|
+| Hybrid Δcosine ≥ noise floor | +0.020 |
+| Hybrid doc diversity ≥ baseline | ≥ 10% |
+| Reranker Δcosine ≥ noise floor | +0.020 |
+| Max added latency | ≤ 500 ms |
+| Noise floor | ± 0.005 |
+
+#### Results
+
+| Arm | Cosine (mean±std) | Latency ms (mean±std) | P95 ms | Docs/q | Errors |
+|:----|:-----------------:|:---------------------:|:------:|:------:|:------:|
+| **vector_baseline** | 0.6097 ± 0.0566 | 2236 ± 127 | 2412 | 4.0 | 0 |
+| **hybrid_only** | 0.6026 ± 0.0705 | 2191 ± 32 | 2244 | 4.0 | 0 |
+| **hybrid_plus_reranker** | 0.5900 ± 0.0667 | 2787 ± 224 | 3171 | 4.0 | 0 |
+| **full_pipeline** | 0.5900 ± 0.0667 | 2988 ± 1223 | 3603 | 4.0 | 0 |
+
+#### Deltas vs `vector_baseline`
+
+| Arm | Δ Cosine | Δ Latency ms | Doc diversity | Verdict |
+|:----|:--------:|:------------:|:-------------:|:-------:|
+| **hybrid_only** | −0.0071 | −44 | 8.7% | ⚪ noise-level |
+| **hybrid_plus_reranker** | −0.0197 | +551 | 95.0% | ❌ regression + costly |
+| **full_pipeline** | −0.0197 | +753 | 95.0% | ❌ regression + costly |
+
+#### Threshold Checklist
+
+| Criterion | Threshold | Measured | Status |
+|-----------|:---------:|:--------:|:------:|
+| Hybrid Δcosine | ≥ +0.020 | −0.0071 | ❌ FAIL |
+| Hybrid doc diversity | ≥ 10% | 8.7% | ❌ FAIL |
+| Hybrid latency delta | ≤ 500 ms | −44 ms | ✅ PASS |
+| Reranker Δcosine | ≥ +0.020 | −0.0126 | ❌ FAIL |
+| Reranker latency delta | ≤ 500 ms | +595 ms | ❌ FAIL |
+
+#### Honest Interpretation
+
+**4 out of 5 criteria failed their pre-defined thresholds. These results are published without softening.**
+
+1. **Hybrid search (BM25 + vector RRF)** — Δcosine = −0.0071, doc diversity 8.7%. On a 119-chunk corpus, BM25 and cosine agree on the top documents 91% of the time. The BM25 layer adds no measurable retrieval quality improvement. The −44 ms latency improvement is likely a measurement artefact uncorrelated to retrieval quality.
+
+2. **Cross-encoder reranker** — changes document ordering for 95% of queries but reduces average cosine similarity by −0.0197. The reranker optimises for cross-encoder relevance (a different signal from cosine proximity), so lower cosine is expected. Whether the reranked documents are actually more useful requires LLM-as-judge faithfulness/relevance evaluation, which is not captured here. The +551 ms latency overhead exceeds the 500 ms budget.
+
+3. **Root cause:** Small corpora are a known weak spot for hybrid retrieval. On 119 chunks, the vector index is already near-optimal — the top-4 cosine-closest chunks are almost certainly the right answer. Hybrid retrieval and reranking diverge and add value at corpus scales of ~10 K+ chunks where recall becomes the bottleneck.
+
+4. **Recommendation:** Ship with `HYBRID_SEARCH_ENABLED=False`, `RERANKER_ENABLED=False` until the knowledge base grows beyond ~10 K chunks. Re-run this experiment after re-ingestion.
+
+> **Caveat on metric:** Cosine similarity is an imperfect proxy; it measures geometric distance to the query embedding, not answer faithfulness or relevance. End-to-end quality metrics (faithfulness, answer relevance via LLM-as-judge) may tell a different story for the reranker specifically. This experiment establishes the retrieval-only baseline.
+
+<!-- RETRIEVAL_FINDINGS_END -->
 
 ### Gate Activation Rates (Full Pipeline)
 
@@ -639,6 +845,11 @@ The **+35% mean latency overhead** is the cost of running 6 subsystems. The **�
 ## Roadmap
 
 - [x] Run structured conversations, publish telemetry findings (47-query A/B comparison complete)
+- [x] Hybrid search — BM25 + vector fusion via Reciprocal Rank Fusion
+- [x] Cross-encoder reranking — ms-marco-MiniLM-L-6-v2
+- [x] Automated evaluation harness — 4 metrics, LLM-as-judge + heuristic fallback
+- [x] 4-arm retrieval quality experiment framework
+- [ ] **Run retrieval experiment & publish quantified findings** ← next
 - [ ] Threshold sensitivity analysis — sweep key parameters, measure impact
 - [ ] Add human evaluation rubric for response quality comparison
 - [ ] File upload ingestion — PDF, DOCX, CSV

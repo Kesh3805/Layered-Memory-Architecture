@@ -1,9 +1,6 @@
 /**
  * AI Retrieval Panel — expandable drawer showing RAG sources,
  * Q&A matches, profile data, and full policy decision.
- *
- * This is the "deep inspection" view, triggered from status bar chips
- * or the Memory button on each message.
  */
 
 import {
@@ -26,7 +23,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.route) {
     sections.push({
-      icon: <Route size={13} />,
+      icon: <Route size={12} />,
       label: 'Retrieval Route',
       value: info.route.replace(/_/g, ' '),
       color: 'text-blue-400',
@@ -35,7 +32,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.intent) {
     sections.push({
-      icon: <Eye size={13} />,
+      icon: <Eye size={12} />,
       label: 'Intent',
       value: `${info.intent} (${info.confidence != null ? Math.round(info.confidence * 100) + '%' : '?'})`,
       color: 'text-purple-400',
@@ -44,7 +41,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.num_docs != null) {
     sections.push({
-      icon: <FileText size={13} />,
+      icon: <FileText size={12} />,
       label: 'Knowledge Base Documents',
       value: `${info.num_docs} chunks retrieved via FAISS`,
       color: 'text-emerald-400',
@@ -53,7 +50,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.similar_queries != null) {
     sections.push({
-      icon: <Database size={13} />,
+      icon: <Database size={12} />,
       label: 'Cross-Conversation Q&A',
       value: `${info.similar_queries} similar past questions matched`,
       color: 'text-amber-400',
@@ -62,7 +59,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.same_conv_qa != null) {
     sections.push({
-      icon: <MessageSquare size={13} />,
+      icon: <MessageSquare size={12} />,
       label: 'Same-Conversation Q&A',
       value: `${info.same_conv_qa} relevant exchanges in this thread`,
       color: 'text-cyan-400',
@@ -71,7 +68,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.profile_injected) {
     sections.push({
-      icon: <User size={13} />,
+      icon: <User size={12} />,
       label: 'Profile Data',
       value: 'User profile was injected into context',
       color: 'text-pink-400',
@@ -80,7 +77,7 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.greeting_personalized) {
     sections.push({
-      icon: <Sparkles size={13} />,
+      icon: <Sparkles size={12} />,
       label: 'Personalization',
       value: 'Greeting personalized with user\'s name',
       color: 'text-yellow-400',
@@ -89,29 +86,29 @@ export default function AIRetrievalPanel({ info }: Props) {
 
   if (info.topic_similarity != null) {
     sections.push({
-      icon: <ArrowRight size={13} />,
+      icon: <ArrowRight size={12} />,
       label: 'Topic Similarity',
       value: `Cosine similarity: ${info.topic_similarity}`,
-      color: 'text-gray-400',
+      color: 'text-zinc-500',
     });
   }
 
   if (sections.length === 0) return null;
 
   return (
-    <div className="mt-2 rounded-lg bg-[#1a1a1a] border border-sidebar-border overflow-hidden fade-in">
-      <div className="px-3 py-2 bg-sidebar-bg/60 border-b border-sidebar-border">
-        <span className="text-[11px] font-semibold text-sidebar-muted tracking-wide uppercase">
+    <div className="mt-3 rounded-xl glass-subtle overflow-hidden">
+      <div className="px-3.5 py-2 border-b border-surface-2/30">
+        <span className="text-2xs font-semibold text-zinc-500 tracking-wider uppercase">
           Retrieval & Memory
         </span>
       </div>
-      <div className="p-3 space-y-2.5">
+      <div className="p-3.5 space-y-3">
         {sections.map((s) => (
           <div key={s.label} className="flex items-start gap-2.5">
-            <span className={`mt-0.5 ${s.color}`}>{s.icon}</span>
+            <span className={`mt-0.5 opacity-80 ${s.color}`}>{s.icon}</span>
             <div>
-              <div className="text-[11px] font-medium text-sidebar-text">{s.label}</div>
-              <div className="text-[10px] text-sidebar-muted">{s.value}</div>
+              <div className="text-[11px] font-medium text-zinc-300">{s.label}</div>
+              <div className="text-2xs text-zinc-500">{s.value}</div>
             </div>
           </div>
         ))}

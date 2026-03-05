@@ -24,15 +24,15 @@ export default function AITokenMeter({ used, limit = DEFAULT_LIMIT }: Props) {
     'bg-accent';
 
   return (
-    <div className="flex items-center gap-2 text-[10px] text-sidebar-muted">
-      <span>~{used.toLocaleString()} tokens</span>
-      <div className="w-16 h-1.5 rounded-full bg-sidebar-border overflow-hidden">
+    <div className="flex items-center gap-2 text-2xs text-zinc-500 ml-1">
+      <span className="font-mono">~{used.toLocaleString()} tok</span>
+      <div className="w-14 h-1 rounded-full bg-surface-2 overflow-hidden">
         <div
-          className={`h-full rounded-full transition-all token-progress-bar ${color}`}
+          className={`h-full rounded-full token-progress-bar ${color}`}
           style={{ '--progress': `${pct}%` } as CSSProperties}
         />
       </div>
-      <span className="opacity-50">{pct.toFixed(0)}%</span>
+      <span className="opacity-40">{pct.toFixed(0)}%</span>
     </div>
   );
 }

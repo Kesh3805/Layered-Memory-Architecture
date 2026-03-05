@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { PanelLeftOpen, ArrowDown, Bug, GitBranch, Brain } from 'lucide-react';
 import { useChatStore } from '../store';
 import type { useChatStream } from '../hooks/use-chat-stream';
@@ -51,55 +52,48 @@ export default function ChatArea({ chat }: Props) {
   return (
     <div className="flex flex-col flex-1 min-w-0 relative">
       {/* Header bar */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-sidebar-border/50">
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-surface-2/30
+                      bg-gradient-to-r from-chat-bg via-chat-bg to-chat-bg">
         {!sidebarOpen && (
-          <button
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
             onClick={toggleSidebar}
             title="Open sidebar"
-            className="p-2 text-sidebar-muted hover:text-white rounded-lg
-                       hover:bg-sidebar-hover transition-colors"
+            className="p-2 text-sidebar-muted hover:text-white rounded-xl
+                       hover:bg-surface-1 transition-all duration-200"
           >
             <PanelLeftOpen size={18} />
-          </button>
+          </motion.button>
         )}
-        <span className="text-sm text-sidebar-muted">
+        <span className="text-sm text-zinc-500 font-medium">
           {conversationId ? 'Chat' : 'New Conversation'}
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-1.5">
           {conversationId && (
             <>
-              <button
+              <HeaderButton
+                icon={<Brain size={14} />}
                 onClick={toggleResearchDash}
-                className="p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
-                  text-sidebar-muted hover:text-white hover:bg-sidebar-hover"
-                title="Research dashboard"
-              >
-                <Brain size={14} />
-              </button>
-              <button
+                tooltip="Research dashboard"
+              />
+              <HeaderButton
+                icon={<GitBranch size={14} />}
                 onClick={toggleThreadPanel}
-                className={`p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
-                  ${threadPanelOpen
-                    ? 'bg-accent/15 text-accent border border-accent/30'
-                    : 'text-sidebar-muted hover:text-white hover:bg-sidebar-hover'}`}
-                title="Toggle thread panel"
-              >
-                <GitBranch size={14} />
-                {threadPanelOpen && <span className="text-[10px]">Threads</span>}
-              </button>
+                tooltip="Toggle thread panel"
+                active={threadPanelOpen}
+                activeLabel="Threads"
+              />
             </>
           )}
-          <button
+          <HeaderButton
+            icon={<Bug size={14} />}
             onClick={toggleDebugMode}
-            className={`p-1.5 rounded-lg transition-colors text-xs flex items-center gap-1.5
-              ${debugMode
-                ? 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/30'
-                : 'text-sidebar-muted hover:text-white hover:bg-sidebar-hover'}`}
-            title="Toggle debug mode"
-          >
-            <Bug size={14} />
-            {debugMode && <span className="text-[10px]">Debug</span>}
-          </button>
+            tooltip="Toggle debug mode"
+            active={debugMode}
+            activeLabel="Debug"
+            activeColor="bg-yellow-500/10 text-yellow-400 border-yellow-500/20"
+          />
         </div>
       </div>
 
@@ -125,31 +119,67 @@ export default function ChatArea({ chat }: Props) {
           </div>
 
           {/* Scroll-to-bottom FAB */}
-          {showScrollBtn && (
-            <button
-              onClick={scrollToBottom}
-              title="Scroll to bottom"
-              className="absolute bottom-28 left-1/2 -translate-x-1/2 p-2 rounded-full
-                         bg-sidebar-hover/90 text-white shadow-lg hover:bg-sidebar-active
-                         transition-all z-10"
-            >
-              <ArrowDown size={18} />
-            </button>
-          )}
+          <AnimatePresence>
+            {showScrollBtn && (
+              <motion.button
+                initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                onClick={scrollToBottom}
+                title="Scroll to bottom"
+                className="absolute bottom-28 left-1/2 -translate-x-1/2 p-2.5 rounded-full
+                           glass text-zinc-300 shadow-elevated hover:text-white
+                           hover:shadow-glow-sm transition-all z-10"
+              >
+                <ArrowDown size={16} />
+              </motion.button>
+            )}
+          </AnimatePresence>
 
           {/* Input area */}
           <InputArea chat={chat} />
         </div>
 
         {/* Thread panel (right sidebar) */}
-        <div
-          className={`${
-            threadPanelOpen ? 'w-72' : 'w-0'
-          } transition-all duration-200 flex-shrink-0 overflow-hidden border-l border-sidebar-border/50 bg-sidebar-bg`}
+        <motion.div
+          animate={{ width: threadPanelOpen ? 288 : 0 }}
+          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+          className="flex-shrink-0 overflow-hidden border-l border-surface-2/30 bg-sidebar-bg"
         >
           <AIThreadPanel />
-        </div>
+        </motion.div>
       </div>
     </div>
+  );
+}
+
+/* ── Header button ─────────────────────────────────────────────────────── */
+
+function HeaderButton({
+  icon, onClick, tooltip, active, activeLabel, activeColor,
+}: {
+  icon: React.ReactNode;
+  onClick: () => void;
+  tooltip: string;
+  active?: boolean;
+  activeLabel?: string;
+  activeColor?: string;
+}) {
+  const defaultActiveColor = 'bg-accent/10 text-accent border-accent/20';
+  return (
+    <button
+      onClick={onClick}
+      className={`p-1.5 rounded-xl transition-all duration-200 text-xs flex items-center gap-1.5
+        ${active
+          ? `${activeColor || defaultActiveColor} border shadow-glow-sm`
+          : 'text-zinc-500 hover:text-white hover:bg-surface-1'}`}
+      title={tooltip}
+    >
+      {icon}
+      {active && activeLabel && (
+        <span className="text-2xs font-medium">{activeLabel}</span>
+      )}
+    </button>
   );
 }

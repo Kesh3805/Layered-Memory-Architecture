@@ -250,6 +250,56 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_doc_chunks_src ON document_chunks(source);"
         )
 
+        # ── Full-text search (BM25 via tsvector) ─────────────────
+        # Add tsvector column for hybrid search if missing.
+        try:
+            cur.execute(
+                "ALTER TABLE document_chunks "
+                "ADD COLUMN IF NOT EXISTS tsv tsvector;"
+            )
+        except Exception:
+            pass
+
+        # GIN index for fast full-text lookup
+        try:
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_doc_chunks_tsv
+                ON document_chunks USING gin(tsv);
+            """)
+        except Exception:
+            pass
+
+        # Trigger: auto-populate tsv on INSERT/UPDATE
+        try:
+            cur.execute("""
+                CREATE OR REPLACE FUNCTION doc_chunks_tsv_trigger() RETURNS trigger AS $$
+                BEGIN
+                    NEW.tsv := to_tsvector('english', COALESCE(NEW.content, ''));
+                    RETURN NEW;
+                END
+                $$ LANGUAGE plpgsql;
+            """)
+            cur.execute("""
+                DROP TRIGGER IF EXISTS trg_doc_chunks_tsv ON document_chunks;
+            """)
+            cur.execute("""
+                CREATE TRIGGER trg_doc_chunks_tsv
+                BEFORE INSERT OR UPDATE OF content ON document_chunks
+                FOR EACH ROW EXECUTE FUNCTION doc_chunks_tsv_trigger();
+            """)
+        except Exception:
+            pass
+
+        # Backfill existing rows that have NULL tsv
+        try:
+            cur.execute("""
+                UPDATE document_chunks
+                SET tsv = to_tsvector('english', COALESCE(content, ''))
+                WHERE tsv IS NULL;
+            """)
+        except Exception:
+            pass
+
         # ── conversation_state (behavioral intelligence layer) ────
         cur.execute("""
             CREATE TABLE IF NOT EXISTS conversation_state (

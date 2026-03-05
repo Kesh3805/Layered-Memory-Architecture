@@ -79,6 +79,18 @@ class Settings:
     QA_K: int = _env_int("QA_K", 4)
     QA_MIN_SIMILARITY: float = _env_float("QA_MIN_SIMILARITY", 0.65)
 
+    # ── Hybrid Search (BM25 + Vector RRF) ─────────────────────────
+    HYBRID_SEARCH_ENABLED: bool = _env_bool("HYBRID_SEARCH_ENABLED", True)
+    HYBRID_VECTOR_WEIGHT: float = _env_float("HYBRID_VECTOR_WEIGHT", 1.0)
+    HYBRID_BM25_WEIGHT: float = _env_float("HYBRID_BM25_WEIGHT", 1.0)
+    HYBRID_RRF_K: int = _env_int("HYBRID_RRF_K", 60)
+    HYBRID_CANDIDATE_MULTIPLIER: int = _env_int("HYBRID_CANDIDATE_MULTIPLIER", 3)
+
+    # ── Reranker (Cross-Encoder) ──────────────────────────────────
+    RERANKER_ENABLED: bool = _env_bool("RERANKER_ENABLED", True)
+    RERANKER_MODEL: str = _env("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    RERANKER_TOP_K: int = _env_int("RERANKER_TOP_K", 4)
+
     # ── Context Window ─────────────────────────────────────────────
     # Token budget reserved exclusively for conversation history.
     # System prompts + RAG docs + profile use the remaining context window.
@@ -136,6 +148,12 @@ class Settings:
     CHUNK_SIZE: int = _env_int("CHUNK_SIZE", 500)
     CHUNK_OVERLAP: int = _env_int("CHUNK_OVERLAP", 50)
     FORCE_REINDEX: bool = _env_bool("FORCE_REINDEX", False)
+    # Semantic chunking: group sentences by embedding similarity rather than
+    # fixed character windows.  Disable to revert to rule-based splitting.
+    SEMANTIC_CHUNKING_ENABLED: bool = _env_bool("SEMANTIC_CHUNKING_ENABLED", True)
+    # Percentile of cosine-distance distribution used as the split threshold.
+    # 95 → split at the top-5% biggest semantic jumps between sentences.
+    SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE: int = _env_int("SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE", 95)
 
     # ── Database (PostgreSQL + pgvector) ──────────────────────────
     DATABASE_URL: str = _env("DATABASE_URL")

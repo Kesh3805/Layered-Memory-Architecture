@@ -7,6 +7,7 @@
  */
 
 import { useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   GitBranch,
   MessageSquare,
@@ -38,7 +39,7 @@ export default function AIThreadPanel() {
 
   if (!conversationId) {
     return (
-      <div className="p-4 text-center text-sidebar-muted text-xs">
+      <div className="p-4 text-center text-zinc-500 text-xs">
         Start a conversation to see topic threads
       </div>
     );
@@ -46,28 +47,28 @@ export default function AIThreadPanel() {
 
   if (threads.length === 0) {
     return (
-      <div className="p-4 text-center text-sidebar-muted text-xs">
-        <GitBranch size={16} className="mx-auto mb-2 opacity-50" />
+      <div className="p-4 text-center text-zinc-600 text-xs">
+        <GitBranch size={16} className="mx-auto mb-2 opacity-30" />
         No threads yet — threads emerge as you chat
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full w-[288px]">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-sidebar-border/50">
-        <GitBranch size={14} className="text-accent" />
-        <span className="text-xs font-semibold text-sidebar-text tracking-wide uppercase">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-2/30">
+        <GitBranch size={13} className="text-accent" />
+        <span className="text-2xs font-semibold text-zinc-400 tracking-wider uppercase">
           Topic Threads
         </span>
-        <span className="ml-auto text-[10px] text-sidebar-muted bg-sidebar-hover px-1.5 py-0.5 rounded-full">
+        <span className="ml-auto text-2xs text-zinc-600 bg-surface-1 px-1.5 py-0.5 rounded-full font-medium">
           {threads.length}
         </span>
       </div>
 
       {/* Thread list */}
-      <div className="flex-1 overflow-y-auto py-2 space-y-1">
+      <div className="flex-1 overflow-y-auto py-2 space-y-0.5">
         {threads.map((thread) => {
           const threadInsights = insights.filter(
             (i) => i.thread_id === thread.id,
@@ -80,16 +81,16 @@ export default function AIThreadPanel() {
                 onClick={() =>
                   setExpandedThread(isExpanded ? null : thread.id)
                 }
-                className={`w-full flex items-start gap-2 px-3 py-2.5 rounded-lg text-left
-                  transition-colors text-sm ${
+                className={`w-full flex items-start gap-2 px-3 py-2.5 rounded-xl text-left
+                  transition-all duration-200 text-sm ${
                     isExpanded
-                      ? 'bg-sidebar-active/50 text-white'
-                      : 'text-sidebar-text hover:bg-sidebar-hover'
+                      ? 'bg-surface-1/80 text-white shadow-inner-glow'
+                      : 'text-zinc-400 hover:bg-surface-1/40'
                   }`}
               >
                 <GitBranch
-                  size={12}
-                  className="mt-0.5 flex-shrink-0 text-accent/70"
+                  size={11}
+                  className="mt-0.5 flex-shrink-0 text-accent/60"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
@@ -98,12 +99,12 @@ export default function AIThreadPanel() {
                     </span>
                     <ChevronDown
                       size={10}
-                      className={`transition-transform text-sidebar-muted ${
+                      className={`transition-transform duration-200 text-zinc-600 ${
                         isExpanded ? 'rotate-180' : ''
                       }`}
                     />
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-[10px] text-sidebar-muted">
+                  <div className="flex items-center gap-3 mt-1 text-2xs text-zinc-600">
                     <span className="flex items-center gap-1">
                       <MessageSquare size={9} />
                       {thread.message_count} msgs
@@ -125,53 +126,61 @@ export default function AIThreadPanel() {
               </button>
 
               {/* Expanded detail */}
-              {isExpanded && (
-                <div className="ml-7 mt-1 mb-2 space-y-2 slide-in">
-                  {/* Summary */}
-                  {thread.summary && (
-                    <div className="px-3 py-2 rounded bg-sidebar-hover/30 text-[11px] text-gray-300 leading-relaxed">
-                      {thread.summary}
-                    </div>
-                  )}
-
-                  {/* Thread insights */}
-                  {threadInsights.length > 0 && (
-                    <div className="space-y-1">
-                      <div className="px-1 text-[10px] font-medium text-sidebar-muted uppercase tracking-wider">
-                        Insights
+              <AnimatePresence>
+                {isExpanded && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                    className="ml-7 mt-1 mb-2 space-y-2 overflow-hidden"
+                  >
+                    {/* Summary */}
+                    {thread.summary && (
+                      <div className="px-3 py-2 rounded-lg bg-surface-1/30 text-[11px] text-zinc-400 leading-relaxed">
+                        {thread.summary}
                       </div>
-                      {threadInsights.map((insight) => (
-                        <div
-                          key={insight.id}
-                          className="flex items-start gap-2 px-3 py-1.5 rounded bg-sidebar-hover/20 text-[10px]"
-                        >
-                          <InsightTypeIcon type={insight.insight_type} />
-                          <div className="flex-1 min-w-0">
-                            <span className="text-gray-300">
-                              {insight.insight_text}
-                            </span>
-                            <div className="flex items-center gap-2 mt-0.5 text-sidebar-muted">
-                              <span className="capitalize">
-                                {insight.insight_type.replace('_', ' ')}
+                    )}
+
+                    {/* Thread insights */}
+                    {threadInsights.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="px-1 text-2xs font-semibold text-zinc-600 uppercase tracking-wider">
+                          Insights
+                        </div>
+                        {threadInsights.map((insight) => (
+                          <div
+                            key={insight.id}
+                            className="flex items-start gap-2 px-3 py-1.5 rounded-lg bg-surface-1/20 text-2xs"
+                          >
+                            <InsightTypeIcon type={insight.insight_type} />
+                            <div className="flex-1 min-w-0">
+                              <span className="text-zinc-400">
+                                {insight.insight_text}
                               </span>
-                              {insight.confidence_score > 0 && (
-                                <span>
-                                  {Math.round(insight.confidence_score * 100)}%
+                              <div className="flex items-center gap-2 mt-0.5 text-zinc-600">
+                                <span className="capitalize">
+                                  {insight.insight_type.replace('_', ' ')}
                                 </span>
-                              )}
+                                {insight.confidence_score > 0 && (
+                                  <span>
+                                    {Math.round(insight.confidence_score * 100)}%
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </div>
+                    )}
 
-                  {/* Thread ID */}
-                  <div className="px-1 text-[9px] text-sidebar-muted/50 font-mono">
-                    {thread.id}
-                  </div>
-                </div>
-              )}
+                    {/* Thread ID */}
+                    <div className="px-1 text-[9px] text-zinc-700 font-mono">
+                      {thread.id}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           );
         })}
@@ -194,8 +203,8 @@ function InsightTypeIcon({ type }: { type: string }) {
     case 'open_question':
       return <Lightbulb size={10} className={`${iconClass} text-blue-400`} />;
     case 'observation':
-      return <Lightbulb size={10} className={`${iconClass} text-gray-400`} />;
+      return <Lightbulb size={10} className={`${iconClass} text-zinc-500`} />;
     default:
-      return <Link2 size={10} className={`${iconClass} text-sidebar-muted`} />;
+      return <Link2 size={10} className={`${iconClass} text-zinc-600`} />;
   }
 }

@@ -28,30 +28,30 @@ export default function AIDebugPanel({ metadata }: Props) {
   ].filter(s => s.data != null);
 
   return (
-    <div className="mt-2 rounded-lg bg-[#0d0d0d] border border-yellow-500/20 overflow-hidden fade-in">
-      <div className="px-3 py-1.5 bg-yellow-500/10 border-b border-yellow-500/20 flex items-center gap-2">
-        <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-        <span className="text-[10px] font-semibold text-yellow-400 tracking-wide uppercase">
+    <div className="mt-3 rounded-xl overflow-hidden border border-yellow-500/15 bg-surface-0/80">
+      <div className="px-3.5 py-2 bg-yellow-500/5 border-b border-yellow-500/15 flex items-center gap-2">
+        <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse" />
+        <span className="text-2xs font-semibold text-yellow-400/80 tracking-wider uppercase">
           Debug Mode
         </span>
       </div>
-      <div className="divide-y divide-sidebar-border">
+      <div className="divide-y divide-surface-2/30">
         {sections.map(({ key, label, data }) => (
           <div key={key}>
             <button
               onClick={() => toggle(key)}
-              className="w-full flex items-center justify-between px-3 py-2
-                         text-[11px] font-medium text-sidebar-text hover:bg-sidebar-hover/30
-                         transition-colors"
+              className="w-full flex items-center justify-between px-3.5 py-2.5
+                         text-[11px] font-medium text-zinc-400 hover:bg-surface-1/30
+                         transition-colors duration-200"
             >
               {label}
               <ChevronDown
-                size={12}
-                className={`transition-transform text-sidebar-muted ${expanded[key] ? 'rotate-180' : ''}`}
+                size={11}
+                className={`transition-transform duration-200 text-zinc-500 ${expanded[key] ? 'rotate-180' : ''}`}
               />
             </button>
             {expanded[key] && (
-              <pre className="px-3 pb-2 text-[10px] text-gray-400 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+              <pre className="px-3.5 pb-3 debug-mono text-zinc-500 overflow-x-auto whitespace-pre-wrap">
                 {JSON.stringify(data, null, 2)}
               </pre>
             )}

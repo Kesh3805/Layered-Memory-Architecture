@@ -35,7 +35,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -163,6 +163,14 @@ class _RuntimeConfig:
         if settings.BASELINE_MODE:
             return False
         return self.get("concept_linking", settings.CONCEPT_LINKING_ENABLED)
+
+    @property
+    def hybrid_search_enabled(self) -> bool:
+        return self.get("hybrid_search", settings.HYBRID_SEARCH_ENABLED)
+
+    @property
+    def reranker_enabled(self) -> bool:
+        return self.get("reranker", settings.RERANKER_ENABLED)
 
 
 runtime_config = _RuntimeConfig()
@@ -471,7 +479,13 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
     rag_similarities: list[float] = []
 
     if decision.inject_rag:
-        docs_with_scores = vector_store.search_with_scores(query, k=decision.rag_k, min_similarity=decision.rag_min_similarity)
+        docs_with_scores = vector_store.search_with_scores(
+            query,
+            k=decision.rag_k,
+            min_similarity=decision.rag_min_similarity,
+            use_hybrid=runtime_config.hybrid_search_enabled,
+            use_reranker=runtime_config.reranker_enabled,
+        )
         docs = [text for text, _score in docs_with_scores]
         rag_similarities = [score for _text, score in docs_with_scores]
         rag_context = "\n".join(docs)
@@ -520,6 +534,10 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
         rag_similarities=rag_similarities,
     )
     tel.mark("retrieve_end")
+
+    # Record retrieval mode in telemetry
+    retrieval_info["hybrid_search"] = runtime_config.hybrid_search_enabled
+    retrieval_info["reranker"] = runtime_config.reranker_enabled
 
     # Inject behavior engine metadata into retrieval_info for observability
     if runtime_config.behavior_enabled:
@@ -932,6 +950,53 @@ def delete_profile_entry(entry_id: int):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  RETRIEVAL TEST ENDPOINT  (experiment use — no LLM generation)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RetrievalTestRequest(BaseModel):
+    query: str
+    k: int = settings.RETRIEVAL_K
+    min_similarity: float = 0.0
+
+
+@app.post("/retrieval/test")
+def retrieval_test(req: RetrievalTestRequest):
+    """Run retrieval for a query and return retrieval_info — no LLM call.
+
+    Used by the retrieval quality A/B experiment to measure pure retrieval
+    metrics without the latency/cost of LLM generation.
+    """
+    from embeddings import get_query_embedding
+    query_embedding = get_query_embedding(req.query)
+    docs_with_scores = vector_store.search_with_scores(
+        req.query,
+        k=req.k,
+        min_similarity=req.min_similarity,
+        use_hybrid=runtime_config.hybrid_search_enabled,
+        use_reranker=runtime_config.reranker_enabled,
+    )
+    docs = [text for text, _score in docs_with_scores]
+    similarities = [score for _text, score in docs_with_scores]
+
+    # Compute per-document rank info
+    doc_details = [
+        {"rank": i + 1, "similarity": round(sim, 4), "snippet": text[:120]}
+        for i, (text, sim) in enumerate(docs_with_scores)
+    ]
+
+    return {
+        "query": req.query,
+        "hybrid_search": runtime_config.hybrid_search_enabled,
+        "reranker": runtime_config.reranker_enabled,
+        "num_docs": len(docs),
+        "avg_similarity": round(sum(similarities) / len(similarities), 4) if similarities else 0.0,
+        "best_similarity": round(max(similarities), 4) if similarities else 0.0,
+        "worst_similarity": round(min(similarities), 4) if similarities else 0.0,
+        "docs": doc_details,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  CHAT ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1111,6 +1176,8 @@ class ExperimentConfigRequest(BaseModel):
     thread_enabled: Optional[bool] = None
     research_insights: Optional[bool] = None
     concept_linking: Optional[bool] = None
+    hybrid_search: Optional[bool] = None
+    reranker: Optional[bool] = None
 
 
 @app.get("/experiments/config")
@@ -1124,6 +1191,8 @@ def get_experiment_config():
             "thread_enabled": runtime_config.threading_enabled,
             "research_insights": runtime_config.research_enabled,
             "concept_linking": runtime_config.concepts_enabled,
+            "hybrid_search": runtime_config.hybrid_search_enabled,
+            "reranker": runtime_config.reranker_enabled,
         },
     }
 
@@ -1142,6 +1211,10 @@ def set_experiment_config(req: ExperimentConfigRequest):
         runtime_config.set("research_insights", req.research_insights)
     if req.concept_linking is not None:
         runtime_config.set("concept_linking", req.concept_linking)
+    if req.hybrid_search is not None:
+        runtime_config.set("hybrid_search", req.hybrid_search)
+    if req.reranker is not None:
+        runtime_config.set("reranker", req.reranker)
     return get_experiment_config()
 
 

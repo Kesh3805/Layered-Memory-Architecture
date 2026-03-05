@@ -63,12 +63,19 @@ def search(query: str, k: int | None = None, min_similarity: float = 0.0) -> lis
 
     Results below *min_similarity* are excluded to prevent irrelevant
     context from being injected when the user's intent is ambiguous.
+
+    When HYBRID_SEARCH_ENABLED, uses BM25 + vector RRF fusion.
+    When RERANKER_ENABLED, applies cross-encoder reranking.
     """
     if k is None:
         from settings import settings
         k = settings.RETRIEVAL_K
 
     if _db_available:
+        from settings import settings
+        if settings.HYBRID_SEARCH_ENABLED or settings.RERANKER_ENABLED:
+            # Delegate to search_with_scores and strip scores
+            return [text for text, _score in search_with_scores(query, k, min_similarity)]
         import query_db
         from embeddings import get_query_embedding
         embedding = get_query_embedding(query)
@@ -83,11 +90,24 @@ def search(query: str, k: int | None = None, min_similarity: float = 0.0) -> lis
         return [_fallback_docs[i] for i in topk if sims[i] >= min_similarity]
 
 
-def search_with_scores(query: str, k: int | None = None, min_similarity: float = 0.0) -> list[tuple[str, float]]:
+def search_with_scores(
+    query: str,
+    k: int | None = None,
+    min_similarity: float = 0.0,
+    use_hybrid: bool | None = None,
+    use_reranker: bool | None = None,
+) -> list[tuple[str, float]]:
     """Semantic search returning (text, similarity) tuples.
 
     Same as search() but preserves cosine similarity scores for
     retrieval quality analysis and telemetry.
+
+    When HYBRID_SEARCH_ENABLED, uses BM25 + vector RRF fusion.
+    When RERANKER_ENABLED, applies cross-encoder reranking.
+
+    Args:
+        use_hybrid:   Override HYBRID_SEARCH_ENABLED for this call.
+        use_reranker: Override RERANKER_ENABLED for this call.
     """
     if k is None:
         from settings import settings
@@ -96,8 +116,58 @@ def search_with_scores(query: str, k: int | None = None, min_similarity: float =
     if _db_available:
         import query_db
         from embeddings import get_query_embedding
+        from settings import settings
         embedding = get_query_embedding(query)
-        return query_db.search_document_chunks_with_scores(embedding, k=k, min_similarity=min_similarity)
+
+        hybrid_on = use_hybrid if use_hybrid is not None else settings.HYBRID_SEARCH_ENABLED
+        reranker_on = use_reranker if use_reranker is not None else settings.RERANKER_ENABLED
+
+        # ── Hybrid Search ─────────────────────────────────────
+        if hybrid_on:
+            from hybrid_search import hybrid_search, HybridConfig
+            conn = query_db.get_connection()
+            try:
+                hybrid_config = HybridConfig(
+                    rrf_k=settings.HYBRID_RRF_K,
+                    vector_weight=settings.HYBRID_VECTOR_WEIGHT,
+                    bm25_weight=settings.HYBRID_BM25_WEIGHT,
+                    candidate_multiplier=settings.HYBRID_CANDIDATE_MULTIPLIER,
+                    vector_min_similarity=min_similarity,
+                )
+                # Fetch more candidates for reranking
+                candidate_k = k * 3 if reranker_on else k
+                results = hybrid_search(
+                    conn, query, embedding, k=candidate_k, config=hybrid_config,
+                )
+            finally:
+                query_db.put_connection(conn)
+        else:
+            # Pure vector search
+            candidate_k = k * 3 if reranker_on else k
+            results = query_db.search_document_chunks_with_scores(
+                embedding, k=candidate_k, min_similarity=min_similarity,
+            )
+
+        # ── Reranking ─────────────────────────────────────────
+        if reranker_on and results:
+            from reranker import rerank
+            texts = [text for text, _score in results]
+            reranked = rerank(query, texts, top_k=k)
+            results = reranked
+        else:
+            results = results[:k]
+
+        # ── Normalize scores to cosine similarity ─────────────
+        # Hybrid returns RRF scores, reranker returns cross-encoder logits.
+        # Normalize all to cosine similarity for fair cross-arm comparison.
+        if hybrid_on or reranker_on:
+            vector_lookup = query_db.search_document_chunks_with_scores(
+                embedding, k=max(k * 5, 50), min_similarity=0.0,
+            )
+            cos_map = {text: sim for text, sim in vector_lookup}
+            results = [(text, cos_map.get(text, 0.0)) for text, _score in results]
+
+        return results
     else:
         from embeddings import get_query_embedding
         if not _fallback_docs:

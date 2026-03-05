@@ -1,81 +1,78 @@
-"""Tests for the paragraph/sentence-aware _chunk_text() function.
+"""Tests for chunker.chunk_text — semantic + rule-based paths.
 
-We test _chunk_text() by extracting its logic rather than importing main.py
-(which has heavy dependencies).  The function is small enough to inline here
-with the same settings-binding pattern as in main.py.
+The semantic path requires embeddings.get_embeddings.  All tests redirect
+chunker._embed to a fast fake that returns controlled unit vectors, so no
+model is downloaded during the test run.
 """
-import re
+import numpy as np
 import pytest
-from unittest.mock import MagicMock
-
-# ---------------------------------------------------------------------------
-# Minimal settings stub
-# ---------------------------------------------------------------------------
-
-_settings_stub = MagicMock()
-_settings_stub.CHUNK_SIZE = 200
-_settings_stub.CHUNK_OVERLAP = 20
+import chunker
 
 
 # ---------------------------------------------------------------------------
-# Replicate _chunk_text() locally so we don't import main.py
+# Embedding fakes
 # ---------------------------------------------------------------------------
 
-def _chunk_text(text: str) -> list[str]:
-    """Paragraph → sentence → character cascading chunker (mirrors main.py)."""
-    size = _settings_stub.CHUNK_SIZE
-    overlap = _settings_stub.CHUNK_OVERLAP
+def _fake_embed_similar(sentences: list[str]) -> np.ndarray:
+    """All sentences are nearly identical → no semantic breakpoints."""
+    base = np.ones(8, dtype=np.float32)
+    base /= np.linalg.norm(base)
+    # Tiny random jitter so percentile computation is stable.
+    rng = np.random.default_rng(0)
+    matrix = base + rng.normal(0, 0.01, (len(sentences), 8)).astype(np.float32)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / norms
 
-    paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
 
-    atoms: list[str] = []
-    for para in paragraphs:
-        if len(para) <= size:
-            atoms.append(para)
-        else:
-            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", para) if s.strip()]
-            for sent in sentences:
-                if len(sent) <= size:
-                    atoms.append(sent)
-                else:
-                    stride = max(1, size - overlap)
-                    for i in range(0, len(sent), stride):
-                        fragment = sent[i : i + size]
-                        if fragment.strip():
-                            atoms.append(fragment)
+def _fake_embed_two_topics(sentences: list[str]) -> np.ndarray:
+    """First half ≈ topic A, second half ≈ topic B → one big semantic gap."""
+    mid = len(sentences) // 2
+    topic_a = np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+    topic_b = np.array([0, 0, 0, 0, 1, 0, 0, 0], dtype=np.float32)
+    rows = [topic_a if i < mid else topic_b for i in range(len(sentences))]
+    return np.stack(rows)
 
-    chunks: list[str] = []
-    current_parts: list[str] = []
-    current_len = 0
 
-    def _flush():
-        if current_parts:
-            chunks.append(" ".join(current_parts))
-
-    for atom in atoms:
-        atom_len = len(atom)
-        if current_parts and current_len + 1 + atom_len > size:
-            _flush()
-            if overlap > 0 and current_parts:
-                tail = " ".join(current_parts)[-overlap:]
-                current_parts = [tail]
-                current_len = len(tail)
-            else:
-                current_parts = []
-                current_len = 0
-        current_parts.append(atom)
-        current_len += (1 + atom_len) if len(current_parts) > 1 else atom_len
-
-    _flush()
-    return [c for c in chunks if c.strip()]
-
+# ---------------------------------------------------------------------------
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _use_small_settings(monkeypatch):
-    """Each test sees CHUNK_SIZE=200, CHUNK_OVERLAP=20."""
-    monkeypatch.setattr(_settings_stub, "CHUNK_SIZE", 200)
-    monkeypatch.setattr(_settings_stub, "CHUNK_OVERLAP", 20)
+def _patch_embed_similar(monkeypatch):
+    """Default: all sentences semantically similar (no forced splits)."""
+    monkeypatch.setattr(chunker, "_embed", _fake_embed_similar)
+
+
+@pytest.fixture()
+def patch_two_topics(monkeypatch):
+    """Override embedding to produce one clear topic boundary."""
+    monkeypatch.setattr(chunker, "_embed", _fake_embed_two_topics)
+
+
+@pytest.fixture(autouse=True)
+def _disable_semantic(monkeypatch):
+    """Run rule-based path by default so existing edge-case tests are stable.
+
+    Semantic-specific tests opt-in by patching SEMANTIC_CHUNKING_ENABLED=True.
+    """
+    from unittest.mock import MagicMock
+    stub = MagicMock()
+    stub.SEMANTIC_CHUNKING_ENABLED = False
+    stub.SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE = 95
+    monkeypatch.setattr("chunker.settings", stub, raising=False)
+    # Patch the lazy import inside chunk_text too.
+    import sys
+    fake_settings_mod = MagicMock()
+    fake_settings_mod.settings = stub
+    monkeypatch.setitem(sys.modules, "settings", fake_settings_mod)
+
+
+# ---------------------------------------------------------------------------
+# Helper: small-settings wrapper
+# ---------------------------------------------------------------------------
+
+def _chunk(text: str, size: int = 200, overlap: int = 20) -> list[str]:
+    return chunker.chunk_text(text, chunk_size=size, chunk_overlap=overlap)
 
 
 # ---------------------------------------------------------------------------
@@ -83,16 +80,16 @@ def _use_small_settings(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_empty_input():
-    assert _chunk_text("") == []
+    assert _chunk("") == []
 
 
 def test_whitespace_only():
-    assert _chunk_text("   \n\n   ") == []
+    assert _chunk("   \n\n   ") == []
 
 
 def test_single_short_paragraph():
     text = "Hello world."
-    chunks = _chunk_text(text)
+    chunks = _chunk(text)
     assert chunks == ["Hello world."]
 
 
@@ -100,7 +97,7 @@ def test_multiple_short_paragraphs_merged():
     """Short paragraphs should be merged into a single chunk."""
     parts = ["Line one.", "Line two.", "Line three."]
     text = "\n\n".join(parts)
-    chunks = _chunk_text(text)
+    chunks = _chunk(text)
     # All three fit in 200 chars so there should be exactly 1 chunk
     assert len(chunks) == 1
     for part in parts:
@@ -116,9 +113,8 @@ def test_two_large_paragraphs_become_separate_chunks():
     para_a = "Alpha. " * 28          # ~196 chars
     para_b = "Beta.  " * 28          # ~196 chars
     text = para_a.strip() + "\n\n" + para_b.strip()
-    chunks = _chunk_text(text)
+    chunks = _chunk(text)
     assert len(chunks) >= 2
-    # Content of both paragraphs should appear somewhere
     assert any("Alpha" in c for c in chunks)
     assert any("Beta" in c for c in chunks)
 
@@ -130,10 +126,9 @@ def test_two_large_paragraphs_become_separate_chunks():
 def test_long_paragraph_split_at_sentences():
     """A paragraph > CHUNK_SIZE must be split at sentence boundaries."""
     sentences = [f"Sentence number {i} ends here." for i in range(20)]
-    text = " ".join(sentences)          # no blank lines → single paragraph
-    chunks = _chunk_text(text)
+    text = " ".join(sentences)
+    chunks = _chunk(text)
     assert len(chunks) > 1
-    # Verify no chunk wildly exceeds CHUNK_SIZE (some tolerance for overlap)
     for c in chunks:
         assert len(c) <= 250, f"Chunk too large: {len(c)}"
 
@@ -141,7 +136,7 @@ def test_long_paragraph_split_at_sentences():
 def test_sentences_not_split_mid_word():
     """Each chunk must end cleanly — no orphaned leading space."""
     text = "First sentence ends. Second sentence is here. Third sentence follows it."
-    chunks = _chunk_text(text)
+    chunks = _chunk(text)
     for c in chunks:
         assert not c.startswith(" ")
         assert c == c.strip()
@@ -154,7 +149,7 @@ def test_sentences_not_split_mid_word():
 def test_very_long_sentence_character_fallback():
     """A sentence longer than CHUNK_SIZE must still be chunked."""
     long_sentence = "word " * 100      # ~500 chars, > 200
-    chunks = _chunk_text(long_sentence.strip())
+    chunks = _chunk(long_sentence.strip())
     assert len(chunks) >= 2
 
 
@@ -163,13 +158,9 @@ def test_very_long_sentence_character_fallback():
 # ---------------------------------------------------------------------------
 
 def test_overlap_carries_tail():
-    """With CHUNK_OVERLAP>0 the end of one chunk should influence the next."""
-    # Create content that forces exactly 2 chunks and check overlap
-    _settings_stub.CHUNK_SIZE = 50
-    _settings_stub.CHUNK_OVERLAP = 10
+    """With chunk_overlap>0 the content should carry across chunk boundaries."""
     text = ("Short sentence A. " * 5) + "\n\n" + ("Short sentence B. " * 5)
-    chunks = _chunk_text(text)
-    # Just verify it doesn't crash and produces multiple chunks
+    chunks = _chunk(text, size=50, overlap=10)
     assert len(chunks) >= 2
 
 
@@ -177,21 +168,75 @@ def test_overlap_carries_tail():
 # Settings-driven behaviour
 # ---------------------------------------------------------------------------
 
-def test_chunk_size_respected(monkeypatch):
-    monkeypatch.setattr(_settings_stub, "CHUNK_SIZE", 50)
-    monkeypatch.setattr(_settings_stub, "CHUNK_OVERLAP", 0)
+def test_chunk_size_respected():
     text = "This is a sentence. " * 20
-    chunks = _chunk_text(text)
+    chunks = _chunk(text, size=50, overlap=0)
     for c in chunks:
-        # 10% tolerance for merging edge
         assert len(c) <= 60, f"Chunk exceeded max: {len(c)}"
 
 
 def test_no_duplicate_content():
     """Chunks should not gratuitously repeat entire sentences."""
     text = "Unique fact one. Unique fact two. Unique fact three."
-    chunks = _chunk_text(text)
+    chunks = _chunk(text)
     combined = " ".join(chunks)
-    # Each unique keyword should appear at least once
     for kw in ("one", "two", "three"):
         assert kw in combined
+
+
+# ---------------------------------------------------------------------------
+# Semantic path
+# ---------------------------------------------------------------------------
+
+def test_semantic_splits_at_topic_boundary(patch_two_topics, monkeypatch):
+    """With two clearly distinct embedding clusters, semantic chunking should
+    produce at least 2 chunks even when all text fits in one character window."""
+    import sys
+    from unittest.mock import MagicMock
+    stub = MagicMock()
+    stub.SEMANTIC_CHUNKING_ENABLED = True
+    stub.SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE = 95
+    fake_mod = MagicMock()
+    fake_mod.settings = stub
+    monkeypatch.setitem(sys.modules, "settings", fake_mod)
+
+    # 10 sentences per topic — clear boundary in the middle.
+    topic_a = " ".join(f"Database fact {i}." for i in range(10))
+    topic_b = " ".join(f"Networking fact {i}." for i in range(10))
+    text = topic_a + " " + topic_b
+    chunks = chunker.chunk_text(text, chunk_size=2000, chunk_overlap=0)
+    assert len(chunks) >= 2
+
+
+def test_semantic_fallback_when_too_few_sentences(monkeypatch):
+    """Fewer than 3 sentences must use rule-based path (no embed call)."""
+    import sys
+    from unittest.mock import MagicMock, patch
+    stub = MagicMock()
+    stub.SEMANTIC_CHUNKING_ENABLED = True
+    stub.SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE = 95
+    fake_mod = MagicMock()
+    fake_mod.settings = stub
+    monkeypatch.setitem(sys.modules, "settings", fake_mod)
+
+    with patch.object(chunker, "_embed", side_effect=AssertionError("should not embed")) as mock_embed:
+        chunks = chunker.chunk_text("Only one sentence here.", chunk_size=200, chunk_overlap=20)
+    assert chunks == ["Only one sentence here."]
+
+
+def test_semantic_fallback_on_embed_error(monkeypatch):
+    """If _embed raises, chunk_text must not crash — falls back to rule-based."""
+    import sys
+    from unittest.mock import MagicMock
+    stub = MagicMock()
+    stub.SEMANTIC_CHUNKING_ENABLED = True
+    stub.SEMANTIC_CHUNK_BREAKPOINT_PERCENTILE = 95
+    fake_mod = MagicMock()
+    fake_mod.settings = stub
+    monkeypatch.setitem(sys.modules, "settings", fake_mod)
+    monkeypatch.setattr(chunker, "_embed", lambda _: (_ for _ in ()).throw(RuntimeError("model unavailable")))
+
+    text = "Sentence one. Sentence two. Sentence three. Sentence four."
+    chunks = chunker.chunk_text(text, chunk_size=200, chunk_overlap=20)
+    assert len(chunks) >= 1
+    assert all(text_part in " ".join(chunks) for text_part in ["one", "two", "three"])
