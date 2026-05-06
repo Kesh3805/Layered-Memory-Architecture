@@ -214,5 +214,13 @@ export function useChatStream() {
     setStreamingId(null);
   }, []);
 
-  return { messages, isLoading, streamingId, error, send, stop, setMessages };
+  /* ── Reload last response ──────────────────────────────────────────────── */
+  const reload = useCallback(() => {
+    if (isLoading) return;
+    const userMessages = messages.filter(m => m.role === 'user');
+    const last = userMessages[userMessages.length - 1];
+    if (last) send(last.content);
+  }, [isLoading, messages, send]);
+
+  return { messages, isLoading, streamingId, error, send, stop, reload, setMessages };
 }

@@ -13,7 +13,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Copy, Check, Bot, UserIcon, ChevronDown } from 'lucide-react';
+import { Copy, Check, Bot, UserIcon, ChevronDown, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -26,6 +26,8 @@ import { useChatStore } from '../store';
 interface Props {
   message: StreamMessage;
   isStreaming?: boolean;
+  isLast?: boolean;
+  onReload?: () => void;
 }
 
 /** Rough token estimate: ~4 chars per token */
@@ -34,13 +36,14 @@ function estimateTokens(text: string): number {
 }
 
 const messageVariants = {
-  hidden: { opacity: 0, y: 12 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } },
+  hidden: { opacity: 0, y: 16, scale: 0.98 },
+  visible: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
 };
 
-export default function AIMessage({ message, isStreaming }: Props) {
+export default function AIMessage({ message, isStreaming, isLast, onReload }: Props) {
   const [copied, setCopied] = useState(false);
   const [showRetrieval, setShowRetrieval] = useState(false);
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   const { memoryPanelOpen, toggleMemoryPanel, debugMode } = useChatStore();
   const isUser = message.role === 'user';
 
@@ -88,18 +91,20 @@ export default function AIMessage({ message, isStreaming }: Props) {
   if (isUser) {
     return (
       <motion.div
+        layout
         variants={messageVariants}
         initial="hidden"
         animate="visible"
         className="group flex gap-3.5 py-5"
       >
-        <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
-                        bg-accent/10 text-accent ring-1 ring-accent/20">
-          <UserIcon size={13} />
+        <div className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center
+                        bg-gradient-to-br from-accent/20 to-teal-500/10 text-accent
+                        ring-1 ring-accent/20 shadow-[0_0_12px_-4px_rgba(16,185,129,0.15)]">
+          <UserIcon size={14} />
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-2xs text-zinc-500 mb-1.5 font-semibold uppercase tracking-wider">You</div>
-          <p className="text-zinc-200 whitespace-pre-wrap leading-relaxed">{message.content}</p>
+          <p className="text-zinc-200 whitespace-pre-wrap leading-relaxed text-[15px]">{message.content}</p>
         </div>
       </motion.div>
     );
@@ -107,15 +112,24 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
   return (
     <motion.div
+      layout
       variants={messageVariants}
       initial="hidden"
       animate="visible"
       className="group flex gap-3.5 py-5"
     >
       {/* Avatar */}
-      <div className="flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center
-                      bg-surface-1 text-zinc-400 ring-1 ring-surface-2">
-        <Bot size={13} />
+      <div className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center
+                      bg-gradient-to-br from-surface-1 to-surface-2 text-zinc-400
+                      ring-1 ring-white/[0.06] shadow-elevated relative overflow-hidden">
+        <Bot size={14} className="relative z-10" />
+        {isStreaming && (
+          <motion.div
+            className="absolute inset-0 bg-gradient-to-t from-accent/20 to-transparent"
+            animate={{ opacity: [0.3, 0.7, 0.3] }}
+            transition={{ duration: 1.5, repeat: Infinity }}
+          />
+        )}
       </div>
 
       {/* Content column */}
@@ -136,19 +150,19 @@ export default function AIMessage({ message, isStreaming }: Props) {
 
         {/* Streaming phase (before content) */}
         {streamingPhase && (
-          <div className="flex items-center gap-2.5 py-3 text-sm text-zinc-500">
-            <div className="flex gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
-              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
-              <span className="w-1.5 h-1.5 rounded-full bg-accent typing-dot" />
+          <div className="flex items-center gap-3 py-4 text-sm text-zinc-500">
+            <div className="flex gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-accent typing-dot" />
+              <span className="w-2 h-2 rounded-full bg-accent typing-dot" />
+              <span className="w-2 h-2 rounded-full bg-accent typing-dot" />
             </div>
-            <span className="text-[13px]">{streamingPhase}</span>
+            <span className="text-[13px] text-zinc-400">{streamingPhase}</span>
           </div>
         )}
 
         {/* Message body (markdown) */}
         {message.content && (
-          <div className="prose max-w-none">
+          <motion.div layout className="prose max-w-none">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
@@ -161,33 +175,71 @@ export default function AIMessage({ message, isStreaming }: Props) {
               {message.content}
             </ReactMarkdown>
             {isStreaming && (
-              <span className="inline-block w-2 h-4 bg-accent streaming-cursor rounded-sm ml-0.5" />
+              <span className="inline-block w-[3px] h-5 bg-accent streaming-cursor rounded-sm ml-0.5 -mb-1" />
             )}
-          </div>
+          </motion.div>
         )}
 
         {/* Actions bar */}
         {!isStreaming && message.content && (
-          <div className="flex items-center gap-1.5 mt-3 opacity-0 group-hover:opacity-100
-                          transition-opacity duration-200">
+          <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2, duration: 0.3 }}
+            className="flex items-center gap-1 mt-3 opacity-0 group-hover:opacity-100
+                        transition-opacity duration-300"
+          >
             <ActionButton onClick={copyText}>
               {copied ? <Check size={12} /> : <Copy size={12} />}
               {copied ? 'Copied' : 'Copy'}
             </ActionButton>
 
+            {isLast && onReload && (
+              <ActionButton onClick={onReload}>
+                <RefreshCw size={12} />
+                Regenerate
+              </ActionButton>
+            )}
+
             {ri && (
               <ActionButton onClick={() => toggleMemoryPanel(message.id)}>
                 <ChevronDown
                   size={12}
-                  className={`transition-transform ${memoryPanelOpen[message.id] ? 'rotate-180' : ''}`}
+                  className={`transition-transform duration-200 ${memoryPanelOpen[message.id] ? 'rotate-180' : ''}`}
                 />
                 Memory
               </ActionButton>
             )}
 
+            {/* Feedback buttons */}
+            <div className="ml-auto flex items-center gap-0.5">
+              <button
+                onClick={() => setFeedback(f => f === 'up' ? null : 'up')}
+                className={`p-1.5 rounded-lg transition-all duration-200 ${
+                  feedback === 'up'
+                    ? 'text-emerald-400 bg-emerald-500/10'
+                    : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-1'
+                }`}
+                title="Good response"
+              >
+                <ThumbsUp size={12} />
+              </button>
+              <button
+                onClick={() => setFeedback(f => f === 'down' ? null : 'down')}
+                className={`p-1.5 rounded-lg transition-all duration-200 ${
+                  feedback === 'down'
+                    ? 'text-rose-400 bg-rose-500/10'
+                    : 'text-zinc-600 hover:text-zinc-400 hover:bg-surface-1'
+                }`}
+                title="Bad response"
+              >
+                <ThumbsDown size={12} />
+              </button>
+            </div>
+
             {/* Token estimate */}
             <AITokenMeter used={estimateTokens(message.content)} />
-          </div>
+          </motion.div>
         )}
 
         {/* Retrieval panel (toggle from status bar "Details" button) */}
@@ -242,8 +294,9 @@ function ActionButton({ onClick, children }: { onClick: () => void; children: Re
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1 px-2.5 py-1 text-xs text-zinc-500 rounded-lg
-                 hover:bg-surface-1 hover:text-zinc-300 transition-all duration-200"
+      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-zinc-500 rounded-lg
+                 hover:bg-surface-1 hover:text-zinc-300 transition-all duration-200
+                 border border-transparent hover:border-white/[0.04]"
     >
       {children}
     </button>
@@ -266,16 +319,18 @@ function CodeBlock({ children, ...props }: React.HTMLAttributes<HTMLPreElement>)
   const lang = childClass.replace('hljs language-', '').replace('language-', '') || 'code';
 
   return (
-    <div className="relative rounded-xl overflow-hidden my-4 border border-surface-2/50 shadow-elevated">
-      <div className="flex items-center justify-between px-4 py-2 bg-surface-0 text-xs text-zinc-500
-                      border-b border-surface-2/30">
-        <span className="font-mono text-2xs uppercase tracking-wider">{lang}</span>
+    <div className="relative rounded-2xl overflow-hidden my-4 border border-white/[0.04] shadow-elevated
+                    bg-gradient-to-b from-surface-0 to-[#0c0c0e]">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-white/[0.02] text-xs text-zinc-500
+                      border-b border-white/[0.04]">
+        <span className="font-mono text-2xs uppercase tracking-wider text-zinc-600">{lang}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 hover:text-zinc-300 transition-colors duration-200"
+          className="flex items-center gap-1.5 hover:text-zinc-300 transition-colors duration-200
+                     px-2 py-1 rounded-md hover:bg-white/[0.04]"
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
-          <span>{copied ? 'Copied' : 'Copy'}</span>
+          <span className="text-2xs">{copied ? 'Copied!' : 'Copy'}</span>
         </button>
       </div>
       <pre {...props} className="!mt-0 !rounded-t-none !border-0">

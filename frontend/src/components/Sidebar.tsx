@@ -73,7 +73,7 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-sidebar-bg border-r border-surface-2/50 w-[272px]">
+    <div className="flex flex-col h-full bg-gradient-to-b from-[#0a0a0c] to-[#08080a] border-r border-white/[0.04] w-[272px]">
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b border-surface-2/50">
         <button

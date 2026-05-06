@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { PanelLeftOpen, ArrowDown, Bug, GitBranch, Brain } from 'lucide-react';
+import { PanelLeftOpen, ArrowDown, Bug, GitBranch, Brain, AlertTriangle, Layers } from 'lucide-react';
 import { useChatStore } from '../store';
 import type { useChatStream } from '../hooks/use-chat-stream';
 import AIMessage from './AIMessage';
@@ -51,9 +51,9 @@ export default function ChatArea({ chat }: Props) {
 
   return (
     <div className="flex flex-col flex-1 min-w-0 relative">
-      {/* Header bar */}
-      <div className="flex items-center gap-3 px-5 py-3 border-b border-surface-2/30
-                      bg-gradient-to-r from-chat-bg via-chat-bg to-chat-bg">
+      {/* Header bar — glassmorphism */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-white/[0.04]
+                      bg-surface-0/80 backdrop-blur-xl relative z-20">
         {!sidebarOpen && (
           <motion.button
             initial={{ opacity: 0, scale: 0.8 }}
@@ -66,9 +66,16 @@ export default function ChatArea({ chat }: Props) {
             <PanelLeftOpen size={18} />
           </motion.button>
         )}
-        <span className="text-sm text-zinc-500 font-medium">
-          {conversationId ? 'Chat' : 'New Conversation'}
-        </span>
+
+        <div className="flex items-center gap-2">
+          {conversationId && (
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-breathe" />
+          )}
+          <span className="text-sm text-zinc-400 font-medium">
+            {conversationId ? 'Chat' : 'New Conversation'}
+          </span>
+        </div>
+
         <div className="ml-auto flex items-center gap-1.5">
           {conversationId && (
             <>
@@ -97,6 +104,23 @@ export default function ChatArea({ chat }: Props) {
         </div>
       </div>
 
+      {/* Error banner */}
+      <AnimatePresence>
+        {chat.error && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="flex items-center gap-2 px-5 py-2.5 bg-rose-500/10 border-b border-rose-500/20 text-rose-300 text-xs">
+              <AlertTriangle size={14} />
+              <span>{chat.error}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Messages + Thread Panel */}
       <div className="flex flex-1 min-h-0">
         {/* Messages area */}
@@ -105,14 +129,18 @@ export default function ChatArea({ chat }: Props) {
             {!hasMessages ? (
               <WelcomeScreen onSuggestion={chat.send} />
             ) : (
-              <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
-                {chat.messages.map((m) => (
-                  <AIMessage
-                    key={m.id}
-                    message={m}
-                    isStreaming={chat.streamingId === m.id}
-                  />
-                ))}
+              <div className="max-w-3xl mx-auto px-4 py-6 space-y-0">
+                <AnimatePresence initial={false}>
+                  {chat.messages.map((m, i) => (
+                    <AIMessage
+                      key={m.id}
+                      message={m}
+                      isStreaming={chat.streamingId === m.id}
+                      isLast={i === chat.messages.length - 1}
+                      onReload={chat.reload}
+                    />
+                  ))}
+                </AnimatePresence>
                 <div ref={bottomRef} />
               </div>
             )}
@@ -128,9 +156,10 @@ export default function ChatArea({ chat }: Props) {
                 transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
                 onClick={scrollToBottom}
                 title="Scroll to bottom"
-                className="absolute bottom-28 left-1/2 -translate-x-1/2 p-2.5 rounded-full
+                className="absolute bottom-28 left-1/2 -translate-x-1/2 p-3 rounded-full
                            glass text-zinc-300 shadow-elevated hover:text-white
-                           hover:shadow-glow-sm transition-all z-10"
+                           hover:shadow-glow-sm transition-all z-10
+                           border border-white/[0.06]"
               >
                 <ArrowDown size={16} />
               </motion.button>
@@ -143,9 +172,9 @@ export default function ChatArea({ chat }: Props) {
 
         {/* Thread panel (right sidebar) */}
         <motion.div
-          animate={{ width: threadPanelOpen ? 288 : 0 }}
+          animate={{ width: threadPanelOpen ? 320 : 0 }}
           transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          className="flex-shrink-0 overflow-hidden border-l border-surface-2/30 bg-sidebar-bg"
+          className="flex-shrink-0 overflow-hidden border-l border-white/[0.04] bg-surface-0/60 backdrop-blur-xl"
         >
           <AIThreadPanel />
         </motion.div>

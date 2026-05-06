@@ -77,9 +77,10 @@ class Settings:
     # ── Retrieval ─────────────────────────────────────────────────
     RETRIEVAL_K: int = _env_int("RETRIEVAL_K", 4)
     QA_K: int = _env_int("QA_K", 4)
-    QA_MIN_SIMILARITY: float = _env_float("QA_MIN_SIMILARITY", 0.65)
+    QA_MIN_SIMILARITY: float = _env_float("QA_MIN_SIMILARITY", 0.72)
 
     # ── Hybrid Search (BM25 + Vector RRF) ─────────────────────────
+    # Enable when corpus exceeds ~500 chunks for measurable quality gain.
     HYBRID_SEARCH_ENABLED: bool = _env_bool("HYBRID_SEARCH_ENABLED", True)
     HYBRID_VECTOR_WEIGHT: float = _env_float("HYBRID_VECTOR_WEIGHT", 1.0)
     HYBRID_BM25_WEIGHT: float = _env_float("HYBRID_BM25_WEIGHT", 1.0)
@@ -87,6 +88,8 @@ class Settings:
     HYBRID_CANDIDATE_MULTIPLIER: int = _env_int("HYBRID_CANDIDATE_MULTIPLIER", 3)
 
     # ── Reranker (Cross-Encoder) ──────────────────────────────────
+    # Cross-encoder reranking improves MRR by reordering candidates.
+    # Adds 5-30ms per document pair. Enable when retrieval quality matters.
     RERANKER_ENABLED: bool = _env_bool("RERANKER_ENABLED", True)
     RERANKER_MODEL: str = _env("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
     RERANKER_TOP_K: int = _env_int("RERANKER_TOP_K", 4)
@@ -110,7 +113,7 @@ class Settings:
     TOPIC_DECAY_ALPHA: float = _env_float("TOPIC_DECAY_ALPHA", 0.2)
     RECENCY_WINDOW: int = _env_int("RECENCY_WINDOW", 6)
     SEMANTIC_K: int = _env_int("SEMANTIC_K", 3)
-    SIMILARITY_THRESHOLD: float = _env_float("SIMILARITY_THRESHOLD", 0.65)
+    SIMILARITY_THRESHOLD: float = _env_float("SIMILARITY_THRESHOLD", 0.70)
 
     # ── Behavior Engine ───────────────────────────────────────────
     # Enable the behavioral intelligence layer (conversation state
