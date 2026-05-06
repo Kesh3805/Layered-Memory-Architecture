@@ -1,0 +1,50 @@
+[
+  {
+    "name": "vector_baseline",
+    "description": "Pure pgvector cosine \u2014 baseline",
+    "queries_run": 10,
+    "errors": 0,
+    "similarity_mean": 0.6426,
+    "similarity_std": 0.0402,
+    "latency_mean_ms": 2254.48,
+    "latency_std_ms": 22.993,
+    "latency_p95_ms": 2285.875,
+    "avg_docs_per_query": 4.0
+  },
+  {
+    "name": "hybrid_only",
+    "description": "BM25 + vector via RRF (k=60)",
+    "queries_run": 10,
+    "errors": 0,
+    "similarity_mean": 0.6426,
+    "similarity_std": 0.0402,
+    "latency_mean_ms": 2311.67,
+    "latency_std_ms": 44.9041,
+    "latency_p95_ms": 2385.41,
+    "avg_docs_per_query": 4.0
+  },
+  {
+    "name": "hybrid_plus_reranker",
+    "description": "Hybrid + cross-encoder reranking",
+    "queries_run": 10,
+    "errors": 0,
+    "similarity_mean": 0.6295,
+    "similarity_std": 0.0429,
+    "latency_mean_ms": 3932.72,
+    "latency_std_ms": 3751.8851,
+    "latency_p95_ms": 9313.58,
+    "avg_docs_per_query": 4.0
+  },
+  {
+    "name": "full_pipeline",
+    "description": "All subsystems (hybrid + reranker + behaviour engine)",
+    "queries_run": 10,
+    "errors": 0,
+    "similarity_mean": 0.6295,
+    "similarity_std": 0.0429,
+    "latency_mean_ms": 2740.02,
+    "latency_std_ms": 63.6042,
+    "latency_p95_ms": 2845.51,
+    "avg_docs_per_query": 4.0
+  }
+]

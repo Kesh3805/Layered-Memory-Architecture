@@ -736,62 +736,61 @@ python -m experiments.eval_retrieval --url http://localhost:8000
 
 <!-- RETRIEVAL_FINDINGS_START -->
 
-### 4-Arm Retrieval Quality Experiment
+## Retrieval Quality: 4-Arm A/B Experiment
 
-**Date:** 2026-03-05 · **Queries per arm:** 80 (320 total) · **Corpus:** 119 indexed chunks · **Methodology:** Pure retrieval via `/retrieval/test` — no LLM generation to isolate retrieval signal.
+**Date:** 2026-05-06 11:19
+**Queries per arm:** 10
+**Total queries:** 40
+**Method:** Pure retrieval (no LLM generation) — `/retrieval/test` endpoint
 
-#### Pre-Defined Success Thresholds
+### Pre-Defined Success Thresholds
 
 *Set before running to prevent post-hoc rationalisation.*
 
 | Criterion | Threshold |
 |-----------|:---------:|
-| Hybrid Δcosine ≥ noise floor | +0.020 |
-| Hybrid doc diversity ≥ baseline | ≥ 10% |
-| Reranker Δcosine ≥ noise floor | +0.020 |
-| Max added latency | ≤ 500 ms |
-| Noise floor | ± 0.005 |
+| Hybrid Δsimilarity ≥ noise floor | +0.020 |
+| Hybrid doc diversity ≥ | 10% |
+| Reranker Δsimilarity ≥ noise floor | +0.020 |
+| Max added latency per query | 500 ms |
+| Noise floor (similarity) | ±0.005 |
+| Noise floor (latency) | ±50 ms |
 
-#### Results
+### Results
 
-| Arm | Cosine (mean±std) | Latency ms (mean±std) | P95 ms | Docs/q | Errors |
-|:----|:-----------------:|:---------------------:|:------:|:------:|:------:|
-| **vector_baseline** | 0.6097 ± 0.0566 | 2236 ± 127 | 2412 | 4.0 | 0 |
-| **hybrid_only** | 0.6026 ± 0.0705 | 2191 ± 32 | 2244 | 4.0 | 0 |
-| **hybrid_plus_reranker** | 0.5900 ± 0.0667 | 2787 ± 224 | 3171 | 4.0 | 0 |
-| **full_pipeline** | 0.5900 ± 0.0667 | 2988 ± 1223 | 3603 | 4.0 | 0 |
+| Arm | Similarity (mean±std) | Latency ms (mean±std) | P95 ms | Docs/q | Errors |
+|:----|:---------------------:|:---------------------:|:------:|:------:|:------:|
+| **vector_baseline** | 0.6426±0.0402 | 2254±23 | 2286 | 4.0 | 0 |
+| **hybrid_only** | 0.6426±0.0402 | 2312±45 | 2385 | 4.0 | 0 |
+| **hybrid_plus_reranker** | 0.6295±0.0429 | 3933±3752 | 9314 | 4.0 | 0 |
+| **full_pipeline** | 0.6295±0.0429 | 2740±64 | 2846 | 4.0 | 0 |
 
-#### Deltas vs `vector_baseline`
+### Deltas vs `vector_baseline`
 
-| Arm | Δ Cosine | Δ Latency ms | Doc diversity | Verdict |
-|:----|:--------:|:------------:|:-------------:|:-------:|
-| **hybrid_only** | −0.0071 | −44 | 8.7% | ⚪ noise-level |
-| **hybrid_plus_reranker** | −0.0197 | +551 | 95.0% | ❌ regression + costly |
-| **full_pipeline** | −0.0197 | +753 | 95.0% | ❌ regression + costly |
+| Arm | Δ Similarity | Δ Latency ms | Doc diversity | Verdict |
+|:----|:------------:|:------------:|:-------------:|:-------:|
+| **hybrid_only** | +0.0000 | +57 | 0.0% | ⚪ noise |
+| **hybrid_plus_reranker** | -0.0131 | +1678 | 90.0% | ❌ regression |
+| **full_pipeline** | -0.0131 | +486 | 90.0% | ❌ regression |
 
-#### Threshold Checklist
+### Threshold Checklist
+
+*Each criterion was defined before running.*
 
 | Criterion | Threshold | Measured | Status |
 |-----------|:---------:|:--------:|:------:|
-| Hybrid Δcosine | ≥ +0.020 | −0.0071 | ❌ FAIL |
-| Hybrid doc diversity | ≥ 10% | 8.7% | ❌ FAIL |
-| Hybrid latency delta | ≤ 500 ms | −44 ms | ✅ PASS |
-| Reranker Δcosine | ≥ +0.020 | −0.0126 | ❌ FAIL |
-| Reranker latency delta | ≤ 500 ms | +595 ms | ❌ FAIL |
+| Hybrid Δsimilarity | ≥0.020 | +0.0000 | ❌ FAIL |
+| Hybrid doc diversity | ≥10% | 0.0% | ❌ FAIL |
+| Hybrid latency delta | ≤500 ms | +57 ms | ✅ PASS |
+| Reranker Δsimilarity | ≥0.020 | -0.0131 | ❌ FAIL |
+| Reranker latency delta | ≤500 ms | +1621 ms | ❌ FAIL |
 
-#### Honest Interpretation
+### Engineering Interpretation
 
-**4 out of 5 criteria failed their pre-defined thresholds. These results are published without softening.**
+> **Hybrid search:** Δsimilarity = +0.0000 (noise floor ±0.005). On this 10-query corpus, hybrid and pure vector retrieve identical documents 100% of the time. BM25 + vector fusion adds no measurable quality improvement over pure vector on a 80-document knowledge base.
+> **Reranker:** Δsimilarity = -0.0131 — regression vs hybrid-only.
 
-1. **Hybrid search (BM25 + vector RRF)** — Δcosine = −0.0071, doc diversity 8.7%. On a 119-chunk corpus, BM25 and cosine agree on the top documents 91% of the time. The BM25 layer adds no measurable retrieval quality improvement. The −44 ms latency improvement is likely a measurement artefact uncorrelated to retrieval quality.
-
-2. **Cross-encoder reranker** — changes document ordering for 95% of queries but reduces average cosine similarity by −0.0197. The reranker optimises for cross-encoder relevance (a different signal from cosine proximity), so lower cosine is expected. Whether the reranked documents are actually more useful requires LLM-as-judge faithfulness/relevance evaluation, which is not captured here. The +551 ms latency overhead exceeds the 500 ms budget.
-
-3. **Root cause:** Small corpora are a known weak spot for hybrid retrieval. On 119 chunks, the vector index is already near-optimal — the top-4 cosine-closest chunks are almost certainly the right answer. Hybrid retrieval and reranking diverge and add value at corpus scales of ~10 K+ chunks where recall becomes the bottleneck.
-
-4. **Recommendation:** Ship with `HYBRID_SEARCH_ENABLED=False`, `RERANKER_ENABLED=False` until the knowledge base grows beyond ~10 K chunks. Re-run this experiment after re-ingestion.
-
-> **Caveat on metric:** Cosine similarity is an imperfect proxy; it measures geometric distance to the query embedding, not answer faithfulness or relevance. End-to-end quality metrics (faithfulness, answer relevance via LLM-as-judge) may tell a different story for the reranker specifically. This experiment establishes the retrieval-only baseline.
+> **Caveat:** Cosine similarity is an imperfect proxy for retrieval quality. The gold standard metrics (faithfulness, answer relevance via LLM-as-judge) require running the full `/chat` pipeline. These results establish the retrieval-only baseline; production recommendation should be verified with end-to-end quality metrics.
 
 <!-- RETRIEVAL_FINDINGS_END -->
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -499,6 +500,9 @@ def run_experiment(queries: list[str]) -> list[ArmResult]:
 
 def main():
     global BASE_URL
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Fast retrieval quality A/B experiment")
     parser.add_argument("--url", default=BASE_URL)
     parser.add_argument("--queries", type=int, default=len(EVAL_QUERIES),
@@ -522,8 +526,6 @@ def main():
     results = run_experiment(queries)
 
     report = format_report(results)
-    print("\n" + report)
-
     out = Path(args.output or f"experiments/results/retrieval_fast_{int(time.time())}.md")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding="utf-8")
@@ -547,6 +549,7 @@ def main():
         })
     json_out.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     logger.info(f"Saved raw JSON → {json_out}")
+    print("\n" + report)
 
 
 if __name__ == "__main__":
