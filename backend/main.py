@@ -52,7 +52,12 @@ from chunker import chunk_text
 from embeddings import get_query_embedding
 from hooks import Hooks
 from llm.classifier import classify_intent
-from llm.generators import generate_response, generate_response_stream, generate_title
+from llm.generators import (
+    GENERATION_ERROR_MESSAGE,
+    generate_response,
+    generate_response_stream,
+    generate_title,
+)
 from llm.profile_detector import detect_profile_updates
 from policy import BehaviorPolicy, extract_context_features
 from settings import settings
@@ -104,7 +109,8 @@ _allowed_origins = _raw_origins if _raw_origins else ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
+    # Credentialed requests from any origin would let any site read user data
+    allow_credentials="*" not in _allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -497,6 +503,7 @@ def run_pipeline(request: ChatRequest) -> PipelineResult:
             similar_queries = query_db.retrieve_similar_queries(
                 query_embedding, k=decision.qa_k, conversation_id=conv_id,
                 current_tags=query_tags, min_similarity=decision.qa_min_similarity,
+                user_id=request.user_id,
             )
             if similar_queries:
                 lines = [
@@ -678,8 +685,7 @@ def persist_after_response(p: PipelineResult, response_text: str):
             # Research extraction: insights + concepts (async-safe, non-blocking)
             if runtime_config.research_enabled:
                 try:
-                    from llm.client import completion as _completion
-                    insights = extract_insights(
+                    extract_insights(
                         p.query, response_text,
                         conversation_id=p.conversation_id,
                         thread_id=p.active_thread_id or None,
@@ -966,8 +972,6 @@ def retrieval_test(req: RetrievalTestRequest):
     Used by the retrieval quality A/B experiment to measure pure retrieval
     metrics without the latency/cost of LLM generation.
     """
-    from embeddings import get_query_embedding
-    query_embedding = get_query_embedding(req.query)
     docs_with_scores = vector_store.search_with_scores(
         req.query,
         k=req.k,
@@ -1025,9 +1029,13 @@ def chat(request: ChatRequest):
         )
     except Exception as e:
         logger.error(f"Generation error: {e}")
-        return {"response": f"Error: {e}", "conversation_id": p.conversation_id}
+        raise HTTPException(status_code=502, detail=GENERATION_ERROR_MESSAGE)
 
-    persist_after_response(p, str(response))
+    if not response:
+        logger.error("Generation returned empty response")
+        raise HTTPException(status_code=502, detail=GENERATION_ERROR_MESSAGE)
+
+    persist_after_response(p, response)
 
     return {
         "response": response,
@@ -1051,6 +1059,7 @@ def chat_stream(request: ChatRequest):
     Lines emitted::
 
         0:"token"\\n          text delta
+        3:"message"\\n        error part (nothing is persisted)
         8:[{meta}]\\n         metadata annotation
         e:{"finishReason":..}\\n  finish
         d:{"finishReason":..}\\n  done
@@ -1063,6 +1072,7 @@ def chat_stream(request: ChatRequest):
     collected: list[str] = []
 
     def event_stream():
+        failed = False
         # ── Stage events (AI timeline) ────────────────────────────────────
         yield f'8:{json.dumps([{"stage": "classified", "intent": p.intent, "confidence": round(p.confidence, 2)}])}\n'
 
@@ -1098,6 +1108,8 @@ def chat_stream(request: ChatRequest):
                     collected.append(json.loads(chunk[2:].rstrip("\n")))
                 except Exception:
                     pass
+            elif chunk.startswith("3:"):
+                failed = True
             yield chunk
 
         # Emit metadata annotation
@@ -1114,8 +1126,13 @@ def chat_stream(request: ChatRequest):
         }
         yield f"8:{json.dumps([meta])}\n"
 
-        # Persist in background
-        persist_after_response(p, "".join(collected))
+        # Persist in background — never store a failed or empty generation
+        response_text = "".join(collected)
+        if failed or not response_text:
+            logger.warning("Skipping persistence for failed/empty generation (conv=%s)",
+                           p.conversation_id)
+            return
+        persist_after_response(p, response_text)
 
     return StreamingResponse(
         event_stream(),
